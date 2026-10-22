@@ -1,0 +1,49 @@
+[project]
+name = "paybroker"
+version = "0.1.0"
+description = "API-driven payment broker sample: smart routing across simulated PSPs with a three-tier fraud engine (rules, in-process gradient-boosted model, asynchronous LLM triage), on Postgres + pgvector."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "agentpg-kit>=0.1.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "psycopg[binary,pool]>=3.2",
+  "pgvector>=0.3",
+  "httpx>=0.27",
+  "mcp>=2.3",
+  "cryptography>=43",
+  "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+train = ["xgboost>=2.1", "numpy>=1.26"]
+
+[project.scripts]
+paybroker = "paybroker.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paybroker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008", "B905", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+
+# Local development: use the sibling checkout of the kit. Images install the published kit instead (see Dockerfile).
+[tool.uv.sources]
+agentpg-kit = { path = "../agentpg-kit", editable = true }

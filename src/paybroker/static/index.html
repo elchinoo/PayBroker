@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en" data-csrf="X-PayBroker-CSRF">
+<head>
+<meta charset="utf-8">
+<title>PayBroker</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Payment broker: smart routing across payment processors with a three-tier fraud engine (rules, a gradient-boosted model and asynchronous LLM triage).">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/kit/base.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#overview"><img src="/static/logo.svg" alt="" width="34" height="34"><span>PayBroker</span></a>
+  <nav id="nav" class="tabs" hidden>
+    <a href="#overview" data-tab="overview">Overview</a>
+    <a href="#payments" data-tab="payments">Payments</a>
+    <a href="#cases" data-tab="cases">Cases</a>
+    <a href="#rules" data-tab="rules">Rules</a>
+    <a href="#merchants" data-tab="merchants">Merchants</a>
+    <a href="#routing" data-tab="routing">Routing</a>
+    <a href="#settings" data-tab="settings">Settings</a>
+    <a href="#connect" data-tab="connect">Connect</a>
+  </nav>
+  <button id="signout" class="ghost" type="button" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="auth-card" class="card narrow" hidden></section>
+  <div id="vault-banner" class="banner vault" hidden></div>
+  <section id="view-overview" hidden></section>
+  <section id="view-payments" hidden>
+    <h1>Payments</h1>
+    <div class="filters">
+      <input id="pay-q" type="search" placeholder="Payment id, customer id or idempotency key" aria-label="Search payments" maxlength="80">
+      <select id="pay-status" aria-label="Status"><option value="">Any status</option></select>
+      <select id="pay-decision" aria-label="Fraud decision"><option value="">Any decision</option><option>APPROVE</option><option>CHALLENGE</option><option>DECLINE</option></select>
+      <select id="pay-score" aria-label="Minimum score"><option value="">Any score</option><option value="300">300 and above</option><option value="500">500 and above</option><option value="700">700 and above</option></select>
+    </div>
+    <div class="card flush"><table>
+      <thead><tr><th>Payment</th><th>Merchant</th><th class="num">Amount</th><th>Status</th><th class="num">Fraud score</th><th>Connector</th><th class="col-added">When</th></tr></thead>
+      <tbody id="pay-body"></tbody></table>
+      <p id="pay-empty" class="empty" hidden>No payments match. Send some from the API, or generate demo traffic under Settings.</p></div>
+    <div class="row"><span id="pay-total" class="muted"></span><button id="pay-more" class="secondary" type="button" hidden>Load more</button></div>
+  </section>
+  <section id="view-cases" hidden>
+    <h1>Fraud cases</h1>
+    <p class="muted">Payments the model scored 700 or higher are declined and opened here. The AI triage runs in the background; a person makes every decision.</p>
+    <div class="filters"><select id="case-status" aria-label="Status"><option value="open">Open</option><option value="resolved">Resolved</option><option value="all">All</option></select></div>
+    <div id="case-list"></div>
+  </section>
+  <section id="view-rules" hidden></section>
+  <section id="view-merchants" hidden></section>
+  <section id="view-routing" hidden></section>
+  <section id="view-settings" hidden></section>
+  <section id="view-connect" hidden></section>
+</main>
+
+<dialog id="detail" aria-label="Details" class="window"><button id="detail-close" class="ghost close" type="button" aria-label="Close">✕</button><div id="detail-body"></div></dialog>
+<dialog id="form" aria-label="Form" class="window narrow-window"><button id="form-close" class="ghost close" type="button" aria-label="Close">✕</button><div id="form-body"></div></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" popover="manual" hidden></div>
+<script src="/static/app.js" type="module"></script>
+</body>
+</html>
