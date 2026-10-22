@@ -32,6 +32,8 @@ PERMISSIONS = {
     "rules:manage": "create, edit, activate fraud rules and decide on suggestions",
     "merchants:manage": "merchants, their keys and webhooks, payment connectors",
     "settings:manage": "LLM accounts, operator tokens, the vault password",
+    "training:export": "see training-data statistics and export the captured examples (admin only; the export holds derived features and labels)",
+    "model:manage": "capture and retention settings, label-aging, upload, activate and roll back fraud models (admin only)",
     "mcp:use": "use the MCP server",
     "metrics:scrape": "scrape /metrics",
     # merchant API keys

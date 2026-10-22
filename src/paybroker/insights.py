@@ -68,14 +68,14 @@ def payment_detail(conn, payment_id: str) -> dict | None:
     tid = tx.pop("id")
     fa = conn.execute(
         "SELECT tier1_rules_triggered, tier2_ml_score, tier2_feature_snapshot, reasons, decision, action_taken, timings, tier3_state, "
-        "tier3_llm_analysis, created_at FROM fraud_assessment WHERE transaction_id=%s", (tid,)).fetchone()
+        "tier3_llm_analysis, model_version, created_at FROM fraud_assessment WHERE transaction_id=%s", (tid,)).fetchone()
     case = conn.execute("SELECT id, status, analyst_decision, note, resolved_by, resolved_at, created_at FROM fraud_case "
                         "WHERE transaction_id=%s", (tid,)).fetchone()
     challenge = conn.execute("SELECT id, status, expires_at FROM three_ds_challenge WHERE transaction_id=%s ORDER BY created_at DESC LIMIT 1",
                              (tid,)).fetchone()
     events = conn.execute("SELECT event_id, type, status, attempts, last_code, created_at, delivered_at FROM webhook_event "
                           "WHERE body->'data'->>'payment_id' = %s ORDER BY created_at", (payment_id,)).fetchall()
-    chargebacks = conn.execute("SELECT amount, reason, created_at FROM chargeback WHERE payment_id=%s ORDER BY id", (payment_id,)).fetchall()
+    chargebacks = conn.execute("SELECT amount, reason, reason_code, created_at FROM chargeback WHERE payment_id=%s ORDER BY id", (payment_id,)).fetchall()
     return {"payment": tx, "fraud": fa, "case": case, "three_ds": challenge, "webhooks": events, "chargebacks": chargebacks}
 
 

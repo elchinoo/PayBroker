@@ -1,0 +1,292 @@
+{
+  "version": "synthetic-1000k-2026-10-22",
+  "created_at": "2026-10-22T18:27:00+00:00",
+  "command": "(defaults)",
+  "feature_hash": "97b4567472ae",
+  "timing_seconds": {
+    "generate_synthetic": 0.25,
+    "train": 0.78,
+    "evaluate": 0.03,
+    "total": 1.1
+  },
+  "data": {
+    "sources": [
+      {
+        "kind": "synthetic",
+        "rows_used": 1000000,
+        "fraud_rows": 93766,
+        "generator": "paybroker.synth",
+        "class_mix": {
+          "legit": 0.7823,
+          "busy_shopper": 0.05,
+          "shared_network": 0.02,
+          "benign_anomaly": 0.071,
+          "ato": 0.0213,
+          "card_testing": 0.0284,
+          "synthetic_identity": 0.0142,
+          "chargeback_link": 0.0128
+        },
+        "label_noise": 0.02,
+        "real_features": [],
+        "synthetic_features": [
+          "amount_log",
+          "amount_vs_avg_ratio",
+          "user_tx_1h",
+          "user_tx_24h",
+          "user_sum_24h_log",
+          "distinct_cards_7d",
+          "ip_tx_1h",
+          "device_tx_1h",
+          "card_tx_1h",
+          "chargebacks",
+          "device_linked_chargebacks",
+          "impossible_travel",
+          "new_device_for_account",
+          "checkout_seconds_log",
+          "pasted_card",
+          "country_mismatch",
+          "account_age_hours_log"
+        ],
+        "approximate_features": []
+      }
+    ],
+    "rows_total": 1000000,
+    "rows_train": 799999,
+    "rows_holdout": 200001,
+    "split": {
+      "synthetic": "stratified random by label"
+    }
+  },
+  "params": {
+    "objective": "binary:logistic",
+    "max_depth": 3,
+    "eta": 0.1,
+    "min_child_weight": 15,
+    "lambda": 5,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "base_score": 0.5,
+    "tree_method": "hist",
+    "seed": 20261022,
+    "nthread": 4,
+    "eval_metric": "aucpr"
+  },
+  "rounds": 70,
+  "xgboost": "3.4.1",
+  "numpy": "2.5.4",
+  "model": {
+    "file": "fraud_gbdt.json",
+    "trees": 70,
+    "nodes": 1014,
+    "max_depth": 3,
+    "reference_vectors": 12,
+    "size_bytes": 42493
+  },
+  "holdout": {
+    "synthetic": {
+      "rows": 200001,
+      "weighted_rows": 200001.0,
+      "fraud_rate": 0.09377,
+      "pr_auc": 0.77632,
+      "roc_auc": 0.87885,
+      "recall_at_1pct_fpr": 0.71873,
+      "split": "stratified random by label",
+      "score_distribution": {
+        "deciles_0_to_1000": [
+          0.91274,
+          0.01482,
+          0.00442,
+          0.00237,
+          0.002,
+          0.00171,
+          0.0029,
+          0.00312,
+          0.00462,
+          0.05128
+        ],
+        "bands": {
+          "approve": {
+            "share": 0.93198,
+            "fraud_rate": 0.03119,
+            "share_of_fraud": 0.31001
+          },
+          "challenge": {
+            "share": 0.00899,
+            "fraud_rate": 0.78532,
+            "share_of_fraud": 0.07529
+          },
+          "decline": {
+            "share": 0.05903,
+            "fraud_rate": 0.97645,
+            "share_of_fraud": 0.6147
+          }
+        }
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "scenario": "ordinary first payment",
+      "score": 28,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 1 earlier payment this hour",
+      "score": 28,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 2 earlier payments this hour",
+      "score": 26,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 3 earlier payments this hour",
+      "score": 26,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 4 earlier payments this hour",
+      "score": 26,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 5 earlier payments this hour",
+      "score": 26,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 6 earlier payments this hour",
+      "score": 38,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 6 earlier, USD 150 basket",
+      "score": 38,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "regular shopper, 5 earlier, only the account counter",
+      "score": 30,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "busy day: 8 payments in 24 h, 3 in the last hour",
+      "score": 26,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "office network: 15 other customers on the IP",
+      "score": 40,
+      "expected": [
+        0,
+        299
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "traveller: new device, other country, USD 400",
+      "score": 43,
+      "expected": [
+        0,
+        699
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "card testing: 12 cards from one device and IP",
+      "score": 993,
+      "expected": [
+        700,
+        1000
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "card testing: one new customer per card, one device and IP",
+      "score": 986,
+      "expected": [
+        700,
+        1000
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "account takeover: new device, travel, big spend, fast",
+      "score": 999,
+      "expected": [
+        700,
+        1000
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "account takeover: new device and country, spend 6x usual, fast",
+      "score": 978,
+      "expected": [
+        700,
+        1000
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "synthetic identity: new account, 4 cards, linked chargebacks",
+      "score": 990,
+      "expected": [
+        700,
+        1000
+      ],
+      "ok": true
+    },
+    {
+      "scenario": "chargeback-linked device",
+      "score": 976,
+      "expected": [
+        700,
+        1000
+      ],
+      "ok": true
+    }
+  ],
+  "warnings": []
+}

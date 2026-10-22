@@ -43,7 +43,7 @@ def _fresh(request, monkeypatch):
     if "client" not in request.fixturenames:
         yield
         return
-    from paybroker import api, core, psp, routing, rules, vault
+    from paybroker import api, core, ml, psp, routing, rules, training_data, vault
     from paybroker.db import connect
 
     for var in ("PAYBROKER_API_KEY", "PAYBROKER_ENCRYPTION_KEY"):
@@ -57,7 +57,7 @@ def _fresh(request, monkeypatch):
         conn.commit()
         routing.seed_connectors(conn)
         rules.seed_defaults(conn)
-    for cache in (routing.invalidate, rules.invalidate, api.forget_merchants, psp.reset_stats, core.auth.limiter.clear):
+    for cache in (routing.invalidate, rules.invalidate, ml.invalidate, training_data.invalidate, api.forget_merchants, psp.reset_stats, core.auth.limiter.clear):
         cache()
     core.local._setup_code = None
     request.getfixturevalue("client").cookies.clear()

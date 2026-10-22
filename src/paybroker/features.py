@@ -5,6 +5,7 @@ bounded event list (the last 200 attempts) plus a few counters; velocity and spe
 time, so they are exact and need no background aggregation. One query reads the four entities of a payment; one
 pipelined round trip writes them back, appending events atomically.
 """
+import hashlib
 import math
 import time
 
@@ -22,6 +23,8 @@ VECTOR_FIELDS = (
     "new_device_for_account", "checkout_seconds_log", "pasted_card", "country_mismatch", "account_age_hours_log",
 )
 
+# Identifies the feature list and its order: stored with every training row so rows built with another layout are never mixed in.
+FEATURE_HASH = hashlib.sha256(",".join(VECTOR_FIELDS).encode()).hexdigest()[:12]
 
 DEFAULT_ACCOUNT_AGE_HOURS = 720.0   # 30 days
 
@@ -117,10 +120,11 @@ ON CONFLICT (entity_type, entity_id) DO UPDATE SET
 
 
 def record(conn, *, user_id, device_id, card_fp, ip, amount: int, result: str, ip_country: str | None, ip_asn: str | None,
-           now: float | None = None) -> None:
+           now: float | None = None, extra: list[tuple[str, tuple]] | None = None) -> None:
     """Append this attempt to every entity it touched. `result` is A (authorized), C (challenged) or D (declined).
     One pipelined round trip; the event list is appended and trimmed inside the database so concurrent attempts
-    against the same IP or card (the card-testing case) are never lost."""
+    against the same IP or card (the card-testing case) are never lost. `extra` statements ride in the same pipeline, which
+    is how the optional training-row insert costs no additional round trip."""
     now = now or time.time()
     event = {"t": now, "a": amount, "r": result, "c": (card_fp or "")[:12], "u": user_id, "co": ip_country}
     plan = [
@@ -138,6 +142,8 @@ def record(conn, *, user_id, device_id, card_fp, ip, amount: int, result: str, i
                 "t": etype, "i": eid, "init": Jsonb({"first_seen": now, "events": [], "links": [], **scalars}),
                 "ev": Jsonb([event]), "link": Jsonb(links), "scalars": Jsonb(scalars),
                 "max_events": MAX_EVENTS, "max_links": MAX_LINKS})
+        for sql, params in extra or ():
+            conn.execute(sql, params)
 
 
 def add_chargeback(conn, *, user_id, card_fp) -> int:

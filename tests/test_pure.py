@@ -1,9 +1,25 @@
 """Logic that needs no database: rules, scoring bands, the model, routing, cards, signing, validation of untrusted input."""
 import json
+import math
 
 import pytest
 
-from paybroker import cards, features, fraud, merchants, ml, routing, rules, suggest, triage, webhooks
+from paybroker import (
+    cards,
+    core,
+    features,
+    fraud,
+    merchants,
+    ml,
+    modelstore,
+    routing,
+    rules,
+    scenarios,
+    suggest,
+    training_data,
+    triage,
+    webhooks,
+)
 
 CLEAN = [0.0] * len(features.VECTOR_FIELDS)
 
@@ -199,3 +215,166 @@ def test_heuristic_triage_recognises_card_testing():
                "similar_past_cases": []}
     r = triage.heuristic(payload)
     assert r["risk_category"] == "CARD_TESTING" and r["recommended_action"] == "PERMANENT_BLOCK" and 0 <= r["confidence_score"] <= 1
+
+
+# ---- the scoring harness: named situations as explicit feature vectors -------------------------------------------
+@pytest.mark.parametrize("name", list(scenarios.SCENARIOS))
+def test_bundled_model_scores_every_scenario_in_its_band(name):
+    vec, low, high = scenarios.SCENARIOS[name]
+    score = ml.load().score(vec, explain=False)[0]
+    assert low <= score <= high, f"{name}: {score} outside {low}..{high}"
+
+
+def test_a_busy_regular_shopper_is_not_challenged_up_to_six_payments_an_hour():
+    """The regression this harness exists for: with an otherwise ordinary customer, 4 earlier payments in the hour used to score
+    385 and 5 scored 428 (3-D Secure for a busy afternoon). Sweep amounts, checkout times and counter patterns."""
+    model = ml.load()
+    for prior in range(0, 7):
+        for amount in (5, 20, 45, 100, 250):
+            for seconds in (20, 30, 60, 120):
+                for same in (True, False):
+                    for ratio in (0.5, 1.0, 2.0, 3.0):
+                        vec = scenarios.shopper(prior, amount=amount, same_everything=same, amount_vs_avg_ratio=ratio,
+                                                checkout_seconds_log=math.log1p(seconds))
+                        assert model.score(vec, explain=False)[0] < 300, (prior, amount, seconds, same, ratio)
+
+
+def test_attack_patterns_stay_declined_and_scenario_vectors_are_explicit():
+    model = ml.load()
+    for name in ("card testing: 12 cards from one device and IP", "card testing: one new customer per card, one device and IP",
+                 "account takeover: new device, travel, big spend, fast", "account takeover: new device and country, spend 6x usual, fast"):
+        assert model.score(scenarios.SCENARIOS[name][0], explain=False)[0] >= 700, name
+    assert len(scenarios.vector()) == len(features.VECTOR_FIELDS)
+    with pytest.raises(KeyError):
+        scenarios.vector(no_such_feature=1)
+    assert all(r["ok"] for r in scenarios.evaluate(model))
+
+
+def test_the_bundled_model_is_valid_small_and_flags_its_provenance():
+    doc = json.loads(ml.MODEL_PATH.read_text())
+    info = ml.validate(doc)
+    assert info["trees"] == 70 and info["max_depth"] <= 3 and ml.MODEL_PATH.stat().st_size < 100_000
+    assert isinstance(doc["trained_on"], dict) and "synthetic" in doc["trained_on"]["summary"]
+    assert doc["features"] == list(features.VECTOR_FIELDS)
+
+
+# ---- uploaded models: validation ---------------------------------------------------------------------------------
+def _leaf_model(value: float, **over) -> dict:
+    doc = {"version": "leaf", "features": list(features.VECTOR_FIELDS), "base_margin": 0.0,
+           "trees": [{"f": [0], "t": [0.0], "l": [-1], "r": [-1], "v": [value], "e": [value]}]}
+    doc.update(over)
+    return doc
+
+
+def _stump(left=1, right=2, feat=0, thr=1.0) -> dict:
+    return {"f": [feat, 0, 0], "t": [thr, 0, 0], "l": [left, -1, -1], "r": [right, -1, -1], "v": [0, -1.0, 1.0], "e": [0, -1.0, 1.0]}
+
+
+def test_validate_accepts_a_minimal_and_a_real_model():
+    assert ml.validate(_leaf_model(0.5)) == {"trees": 1, "nodes": 1, "max_depth": 0}
+    assert ml.Model(_leaf_model(20.0)).score([0.0] * 17, explain=False)[0] == 1000
+    assert ml.Model(_leaf_model(-20.0)).score([0.0] * 17, explain=False)[0] == 0
+    assert ml.Model(_leaf_model(1e4, base_margin=1e4)).score([0.0] * 17)[0] == 1000     # no overflow in exp()
+
+
+def _bad(**kw):
+    doc = _leaf_model(1.0)
+    doc.update(kw)
+    return doc
+
+
+@pytest.mark.parametrize("doc,why", [
+    ([], "not an object"), ({}, "no features"), (_bad(features=list(features.VECTOR_FIELDS)[::-1]), "feature order"),
+    (_bad(features=list(features.VECTOR_FIELDS)[:-1]), "feature count"), (_bad(features=list(features.VECTOR_FIELDS) + ["x"]), "extra feature"),
+    (_bad(base_margin="0"), "margin type"), (_bad(base_margin=float("inf")), "infinite margin"), (_bad(base_margin=True), "bool margin"),
+    (_bad(trees=[]), "no trees"), (_bad(trees="x"), "trees type"), (_bad(trees=[_leaf_model(1.0)["trees"][0]] * (ml.MAX_TREES + 1)), "too many trees"),
+    (_bad(trees=[{"f": [0]}]), "missing lists"),
+    (_bad(trees=[{"f": [0], "t": [0], "l": [-1], "r": [-1], "v": [1, 2], "e": [1]}]), "ragged lists"),
+    (_bad(trees=[{"f": [0], "t": [0], "l": [-1], "r": [-1], "v": [float("nan")], "e": [1]}]), "nan leaf"),
+    (_bad(trees=[{"f": [0], "t": [0], "l": [-1], "r": [-1], "v": [1e9], "e": [1]}]), "huge leaf"),
+    (_bad(trees=[_stump(left=0, right=2)]), "child points to the root"), (_bad(trees=[_stump(left=1, right=1)]), "shared child"),
+    (_bad(trees=[{**_stump(), "l": [1, 0, -1], "r": [2, 1, -1]}]), "cycle"),
+    (_bad(trees=[_stump(left=1, right=9)]), "child out of range"), (_bad(trees=[_stump(feat=17)]), "feature index out of range"),
+    (_bad(trees=[_stump(feat=-1)]), "negative feature"), (_bad(trees=[_stump(feat=1.5)]), "float feature"),
+    (_bad(trees=[_stump(thr=float("nan"))]), "nan threshold"), (_bad(trees=[_stump(thr="x")]), "string threshold"),
+    (_bad(trees=[{**_stump(), "l": [1, 2, -1], "r": [2, 2, -1]}]), "two parents"),
+    (_bad(version=7), "version type"),
+])
+def test_validate_refuses_malformed_models(doc, why):
+    with pytest.raises(ml.ModelError):
+        ml.validate(doc)
+
+
+def _chain(depth: int) -> dict:
+    """A tree that goes `depth` levels down its left side (every right child is a leaf)."""
+    t = {k: [] for k in "ftlrve"}
+
+    def node(d: int) -> int:
+        i = len(t["f"])
+        for k in t:
+            t[k].append(0)
+        if d == 0:
+            t["l"][i] = t["r"][i] = -1
+            return i
+        t["t"][i] = 1.0
+        t["l"][i] = node(d - 1)
+        t["r"][i] = node(0)
+        return i
+    node(depth)
+    return t
+
+
+def test_validate_bounds_the_depth_of_a_tree():
+    assert ml.validate(_bad(trees=[_chain(ml.MAX_DEPTH)]))["max_depth"] == ml.MAX_DEPTH
+    with pytest.raises(ml.ModelError, match="deeper"):
+        ml.validate(_bad(trees=[_chain(ml.MAX_DEPTH + 1)]))
+
+
+def test_parse_refuses_nan_infinity_garbage_and_oversize():
+    for raw in (b'{"base_margin": NaN}', b"Infinity", b"not json", b"\xff\xfe", b"[" * 100_000, b"x" * (ml.MAX_MODEL_BYTES + 1)):
+        with pytest.raises(ml.ModelError):
+            ml.parse(raw)
+    assert ml.parse(json.dumps(_leaf_model(1.0)))["version"] == "leaf"
+
+
+def test_upload_envelope_and_limits():
+    doc, notes, version, activate = modelstore.parse_upload(json.dumps({"model": _leaf_model(1.0), "notes": " hi ", "version": "v2",
+                                                                          "activate": True}).encode())
+    assert (notes, version, activate) == ("hi", "v2", True) and doc["trees"]
+    for body in (b"[]", b'{"model": 1}', b'{"model": {}, "x": 1}', b'{"trees": []}', b"{}",
+                 json.dumps({"model": _leaf_model(1.0), "version": "../etc/passwd"}).encode(),
+                 json.dumps({"model": _leaf_model(1.0), "version": "a" * 65}).encode(),
+                 json.dumps({"model": _leaf_model(1.0), "notes": "n" * 1001}).encode()):
+        with pytest.raises(modelstore.ModelStoreError) as exc:
+            modelstore.parse_upload(body)
+        assert exc.value.status == 422
+    with pytest.raises(modelstore.ModelStoreError) as exc:
+        modelstore.parse_upload(b"x" * (ml.MAX_MODEL_BYTES + 20_000))
+    assert exc.value.status == 413
+    bad_ref = _leaf_model(1.0, reference=[{"x": [0.0] * 17, "score": 5}])
+    with pytest.raises(modelstore.ModelStoreError):
+        modelstore.parse_upload(json.dumps(bad_ref).encode())
+
+
+# ---- training data helpers and permissions -------------------------------------------------------------------------
+@pytest.mark.parametrize("code,reason,want", [
+    ("10.4", "", True), ("4837", "x", True), ("10.1", "", True), ("13.1", "fraud", False), ("4853", "", False), (None, "fraud", True),
+    (None, "Fraud", True), (None, "item not received, not fraud", False), (None, "", False), ("", "stolen card", False),
+])
+def test_only_fraud_coded_chargebacks_are_fraud_labels(code, reason, want):
+    assert training_data.is_fraud_chargeback(code, reason) is want
+
+
+def test_new_permissions_belong_to_the_admin_role_alone():
+    for perm in ("training:export", "model:manage"):
+        assert perm in core.PERMISSIONS
+        for role, perms in core.ROLE_PERMISSIONS.items():
+            assert (perm in perms or "*" in perms) == (role == "admin"), (perm, role)
+        assert not any(perm in p for p in core.SCOPE_PERMISSIONS.values() if "*" not in p)
+
+
+def test_feature_hash_identifies_the_layout():
+    assert len(features.FEATURE_HASH) == 12 and features.FEATURE_HASH == training_data.features.FEATURE_HASH
+    assert training_data.parse_since("2026-01-31").year == 2026 and training_data.parse_since(None) is None
+    with pytest.raises(training_data.TrainingError):
+        training_data.parse_since("last tuesday")

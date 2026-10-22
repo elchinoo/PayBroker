@@ -1,10 +1,12 @@
 import { api } from "/kit/api.js";
 import { fmtDate, $, copy, field, fill, h, toast } from "/kit/ui.js";
+import { renderModel } from "/static/model.js";
 
 export async function initSettings() {
   const box = $("view-settings");
-  fill(box, h("h1", {}, "Settings"), h("div", { id: "set-accounts" }), h("div", { id: "set-security", class: "settings-block" }), h("div", { id: "set-demo", class: "settings-block" }));
+  fill(box, h("h1", {}, "Settings"), h("div", { id: "set-accounts" }), h("div", { id: "set-model", class: "settings-block" }), h("div", { id: "set-security", class: "settings-block" }), h("div", { id: "set-demo", class: "settings-block" }));
   renderAccounts();
+  renderModel($("set-model"));
   renderSecurity();
   renderDemo();
 }

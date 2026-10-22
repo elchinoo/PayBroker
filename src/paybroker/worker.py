@@ -8,7 +8,7 @@ import threading
 import time
 
 from . import metrics as m
-from . import psp, suggest, triage, webhooks
+from . import psp, suggest, training_data, triage, webhooks
 from . import settings_store as store
 from .db import connect
 from .llm_http import LLMError
@@ -17,6 +17,7 @@ LEASE_SECONDS = 120
 MAX_ATTEMPTS = {"webhook": len(webhooks.BACKOFF), "fraud.triage": 3, "fraud.rules": 2}
 RETRY_SECONDS = {"fraud.triage": [30, 300, 1800], "fraud.rules": [300, 3600]}
 SYNTH_EVERY = 24 * 3600
+PURGE_EVERY = 600
 
 
 def claim(conn, limit: int = 20) -> list[dict]:
@@ -105,6 +106,7 @@ def maybe_schedule_rule_synthesis(conn) -> bool:
 
 def loop(stop: threading.Event, interval: float = 1.0) -> None:
     last_flush = last_sched = 0.0
+    last_purge = float("-inf")      # the first pass purges at once
     while not stop.is_set():
         try:
             with connect(retries=1) as conn:
@@ -116,6 +118,9 @@ def loop(stop: threading.Event, interval: float = 1.0) -> None:
                 if time.monotonic() - last_sched > 600:
                     maybe_schedule_rule_synthesis(conn)
                     last_sched = time.monotonic()
+                if time.monotonic() - last_purge > PURGE_EVERY:
+                    training_data.purge(conn)       # retention and the row cap hold even while capture is switched off
+                    last_purge = time.monotonic()
         except Exception:  # noqa: BLE001 - the database may be asleep; try again
             n = 0
         stop.wait(0.05 if n else interval)

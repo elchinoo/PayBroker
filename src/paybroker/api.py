@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__, auth, cards, core, merchants, payments, routing, rules, vault, worker
+from . import __version__, auth, cards, core, merchants, ml, payments, routing, rules, vault, worker
 from . import metrics as m
 from .config import get_settings
 from .core import COOKIE, CSRF_HEADER, fed, local
@@ -152,7 +152,25 @@ class McpGuard:
 
 app = FastAPI(title="PayBroker", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(McpGuard)
-app.add_middleware(SecurityGuard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), body_prefixes=("/api/", "/v1/", "/3ds/"),
+
+
+class _Guard(SecurityGuard):
+    """The kit's guard caps operator bodies at 64 KB. A model upload is bigger (a retrained model is tens of KB, an uploaded one
+    may be up to ml.MAX_MODEL_BYTES), so exactly that one route gets its own, larger cap; everything else keeps the default."""
+
+    UPLOAD = "/api/admin/models"
+
+    def __init__(self, app, **kw):
+        super().__init__(app, **kw)
+        self._upload = SecurityGuard(app, **{**kw, "max_body": ml.MAX_MODEL_BYTES + 16 * 1024})
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == self.UPLOAD:
+            return await self._upload(scope, receive, send)
+        return await super().__call__(scope, receive, send)
+
+
+app.add_middleware(_Guard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), body_prefixes=("/api/", "/v1/", "/3ds/"),
                    observe=core.metrics.observe)
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -584,6 +602,7 @@ def revoke_token(token_id: int):
     return {"revoked": token_id}
 
 
-from . import api_admin  # noqa: E402  (needs `app`, `require`, `forget_merchants` defined above)
+from . import api_admin, api_training  # noqa: E402  (need `app`, `require`, `forget_merchants` defined above)
 
 app.include_router(api_admin.build_router(require, forget_merchants, lambda request: public_url(request, core.public_url_env)))
+app.include_router(api_training.build_router(require))

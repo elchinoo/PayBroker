@@ -23,6 +23,7 @@ class ResolveBody(_B):
 class ChargebackBody(_B):
     amount: int | None = Field(None, ge=1, le=99_999_999)
     reason: str = Field("", max_length=200)
+    reason_code: str | None = Field(None, max_length=20, description="network reason code, e.g. 10.4 or 4837; fraud codes label the payment as fraud")
 
 
 class RuleBody(_B):
@@ -124,7 +125,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     def chargeback(payment_id: str, body: ChargebackBody):
         with connect() as conn:
             try:
-                return cases.record_chargeback(conn, payment_id, body.amount, body.reason) | {"ok": True}
+                return cases.record_chargeback(conn, payment_id, body.amount, body.reason, body.reason_code) | {"ok": True}
             except cases.CaseError as exc:
                 raise HTTPException(422, str(exc)) from exc
             finally:

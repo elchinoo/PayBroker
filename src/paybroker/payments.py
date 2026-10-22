@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import cards, features, fraud, ml, routing, rules
+from . import cards, features, fraud, ml, routing, rules, training_data
 from . import metrics as m
 from .ids import new_id
 
@@ -166,7 +166,8 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
 
     # -- tier 2
     t0 = time.perf_counter()
-    score, contribs = ml.load().score(vector)
+    model = ml.current(conn)
+    score, contribs = model.score(vector)
     t_ml = _ms(t0)
     reasons = list(dict.fromkeys(t1.reasons + ml.reasons_from(contribs))) if (t1.decision or score >= 300) else []
     fraud_ms = _ms(t_start)
@@ -191,16 +192,19 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
     # -- persist, learn, emit
     fa_row = conn.execute(
         "INSERT INTO fraud_assessment (transaction_id, tier1_rules_triggered, tier2_ml_score, tier2_feature_snapshot, reasons, "
-        "decision, action_taken, timings, feature_vector, tier3_state) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+        "decision, action_taken, timings, feature_vector, tier3_state, model_version) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
         (tx_id, t1.triggered, score, Jsonb(named), reasons, decision, action,
          Jsonb({"fraud_ms": round(fraud_ms, 2), "feature_fetch_ms": round(t_features, 2), "tier1_ms": round(t_rules, 2),
                 "ml_inference_ms": round(t_ml, 2), "psp_ms": round(t_psp, 1), "attempts": attempts}),
-         vector, "queued" if score >= 700 else "none")).fetchone()
+         vector, "queued" if score >= 700 else "none", model.version[:64])).fetchone()
     if score >= 700:   # flagged: open a case and let the asynchronous LLM agent triage it
         conn.execute("INSERT INTO fraud_case (transaction_id) VALUES (%s) ON CONFLICT DO NOTHING", (tx_id,))
         conn.execute("INSERT INTO outbox (topic, payload) VALUES ('fraud.triage', %s)", (Jsonb({"transaction_id": str(tx_id)}),))
+    # Opt-in training capture rides in the feature store's own pipelined round trip (no extra database call).
+    extra = ([training_data.capture_statement(payment_id, vector, model.version, score, decision)]
+             if training_data.capture_enabled(conn) else None)
     features.record(conn, user_id=req["customer_id"], device_id=req["device"], card_fp=card["fingerprint"], ip=req["ip"],
-                    amount=body["amount"], result=result, ip_country=ip_country, ip_asn=ip_asn)
+                    amount=body["amount"], result=result, ip_country=ip_country, ip_asn=ip_asn, extra=extra)
     total_ms = int(_ms(t_start))
     sets = ", ".join(f"{k}=%s" for k in tx_fields)
     conn.execute(f"UPDATE transaction SET status=%s, latency_ms=%s, updated_at=now(), {sets} WHERE id=%s",
