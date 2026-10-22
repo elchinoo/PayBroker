@@ -93,8 +93,8 @@ Deliveries are at least once: use `id` to deduplicate.
 ## Operator API (`/api`)
 
 Permissions (what a role or token scope grants): `payments:read`, `cases:review`, `rules:manage`, `merchants:manage`,
-`settings:manage`, `training:export`, `model:manage`, `mcp:use`, `metrics:scrape`. The last two before `mcp:use` (`training:export` and
-`model:manage`) belong to the `admin` role and the `full` scope only. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
+`settings:manage`, `training:export`, `model:manage`, `data:reset`, `mcp:use`, `metrics:scrape`. Three of them (`training:export`,
+`model:manage` and `data:reset`) belong to the `admin` role and the `full` scope only. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
 Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token calls don't need it.
 
 | Call | Needs | Notes |
@@ -125,7 +125,21 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `GET /api/admin/models/{id}` | `model:manage` | the model document |
 | `POST /api/admin/models/{id}/activate`, `POST /api/admin/models/use-bundled` | `model:manage` | switch (or roll back) the scoring model; other instances follow within about 30 s |
 | `DELETE /api/admin/models/{id}` | `model:manage` | refused (409) while active |
+| `GET /api/admin/data/reset` | `data:reset` | what a reset would delete right now (exact row counts per table), the confirmation phrase, and the last 10 resets (who, when, outcome, counts) |
+| `POST /api/admin/data/reset` `{confirm, include_training_data?, include_rule_suggestions?}` | `data:reset` | wipes the transaction data and keeps the configuration (see below); `confirm` must be exactly `RESET PAYBROKER DATA` (else 422, nothing is deleted); both flags default to `true`; 409 while another reset runs; returns `{deleted: {table: rows}, skipped, seconds, chunks, max_chunk_rows, audit_id}` |
 | `GET /metrics` | `metrics:scrape` | Prometheus |
+
+### Reset the data (`POST /api/admin/data/reset`)
+
+Deletes, children first, in chunks of at most 5,000 rows per transaction: the outbox queue, `webhook_event`, `three_ds_challenge`,
+`fraud_assessment`, `fraud_case`, `chargeback`, `transaction` (payments, with their captures, refunds, attempts, idempotency records and
+card references, which are columns of the payment row), `fs_entity` (the feature store: the velocity the model remembers), and, unless
+switched off, `training_example` and `rule_suggestion`. Everything else is kept: merchants and their keys, webhook endpoints, card tokens,
+connectors, fraud rules, the blocked list, settings, AI accounts, uploaded models, users, sessions and operator tokens. A key that worked
+before keeps working. The run is safe to interrupt and to repeat (a second call continues), takes a database advisory lock so two resets
+cannot overlap, and writes one `admin_audit` row (actor, `data.reset`, detail with the options and counts, time). Payments sent while it
+runs may survive it, so pause the senders first. Only the `admin` role and `full` tokens may call it; merchant keys, other roles and the
+`read` and `metrics` scopes get 403, no credential 401.
 
 Merchant settings (`PATCH /api/merchants/{id}` with `settings`): `preferred_psps`, `max_fee_bps`, `weights {auth, cost, latency}`,
 `require_3ds_over_cents`, `allowed_currencies`, `region` (data residency), `capture_method`.

@@ -266,6 +266,31 @@ API responses are unchanged.
   laptop is larger than the effect, so a second measurement alternated capture off and on payment by payment inside one process
   (3 x 1,500 payments each): the difference is **+0.02 to +0.09 ms at p50** and +0.02 to +0.15 ms on the mean, about 1 %.
 
+## Reset the data and start fresh
+
+Settings > Maintenance (admin only), `POST /api/admin/data/reset` and `paybroker reset-data` wipe the **transaction data** and keep the
+**configuration**, for example after a simulator bug filled the system with payments.
+
+```bash
+paybroker reset-data --yes --confirm "RESET PAYBROKER DATA" [--keep-training-data] [--keep-rule-suggestions]
+```
+
+| Deleted | Kept |
+|---|---|
+| `transaction`: payments, with their captures, refunds, attempts, idempotency records and card references (all columns of the payment row) | `merchant`, `merchant_key` (a key that worked keeps working), webhook URL and secret |
+| `three_ds_challenge`, `fraud_assessment`, `fraud_case` (with its decision trail), `chargeback` | `card`: vaulted test-card tokens (metadata only; the merchant may hold them, and they feed no score) |
+| `webhook_event` (deliveries) and `outbox` (the queue) | `psp_connector` (routing configuration; their live auth and latency averages are not reset) |
+| `fs_entity`: the feature store (a customer with ten payments scores like a new one afterwards) | `fraud_rule` and `blacklist`, including entries a case or chargeback once added (remove them under Rules if wanted) |
+| `training_example` (unless `include_training_data: false` / `--keep-training-data`) | `model_version` (uploaded models and the active one), `llm_account`, `app_setting` (capture and retention settings, vault) |
+| `rule_suggestion` (unless `include_rule_suggestions: false` / `--keep-rule-suggestions`) | `web_session`, `api_token`, `oidc_login`, `admin_audit`, `schema_migrations` |
+
+It deletes children first, at most 5,000 rows per transaction, so it is safe to interrupt and to run again (it continues); a database
+advisory lock stops two resets from overlapping (409 over the API, exit code 1 on the command line). Each run adds a row to
+`admin_audit` (who, when, options, rows deleted per table), shown under Settings > Maintenance. Nothing process-local depends on the deleted data (the merchant, key, rule,
+connector and training-setting caches hold configuration, which is kept), so other running instances need no restart: their caches expire within
+5 to 30 seconds anyway. Payments sent while a reset runs may survive it; pause the senders first. Sequences are not rewound and the
+space is returned to the table by autovacuum.
+
 ## Roles and single sign-on
 
 Standalone, the first-run admin has everything. Federated with the identity provider (`PAYBROKER_OIDC_ISSUER`, client id
@@ -273,7 +298,7 @@ Standalone, the first-run admin has everything. Federated with the identity prov
 
 | Role | May |
 |---|---|
-| `admin` | everything, including exporting training data (`training:export`) and managing models and capture (`model:manage`), which no other role has |
+| `admin` | everything, including exporting training data (`training:export`), managing models and capture (`model:manage`) and resetting the transaction data (`data:reset`), which no other role has |
 | `risk_manager` | read, resolve cases, record chargebacks, manage rules and decide on suggestions, use MCP |
 | `analyst` | read, resolve cases, record chargebacks, use MCP |
 | `operator` | read, manage merchants, keys, webhooks and connectors, use MCP |

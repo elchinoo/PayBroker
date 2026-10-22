@@ -45,41 +45,50 @@ function dailyBars(rows) {
 }
 
 export async function initOverview() {
+  // The title and the period selector are built once; only the data region below them is redrawn when the period changes
+  // or demo traffic is sent, so the selector keeps its focus (a keyboard user steps through the periods) and its choice.
   const box = $("view-overview");
-  fill(box, h("p", { class: "loading" }, "Loading…"));
-  let o;
-  try { o = await api(`/api/overview?days=${days}`); } catch (err) { fill(box, h("p", { class: "error" }, err.message)); return; }
-  const stat = (value, label, hot, href) => h("a", { class: `stat${hot ? " hot" : ""}`, href: href || "#overview" }, h("strong", {}, value), h("span", {}, label));
-  const period = h("select", { "aria-label": "Period", onchange: (e) => { days = Number(e.target.value); initOverview(); } },
+  const body = h("div", { id: "ov-body" }, h("p", { class: "loading" }, "Loading…"));
+  const period = h("select", { id: "ov-period", "aria-label": "Period", onchange: (e) => { days = Number(e.target.value); paint(); } },
     ...[[1, "Last 24 hours"], [7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"]].map(([v, t]) => h("option", { value: v, selected: v === days }, t)));
-  const parts = [
-    h("div", { class: "row" }, h("h1", {}, "Overview"), period),
-    h("div", { class: "stats" },
-      stat(o.payments.toLocaleString(), "payments", false, "#payments"),
-      stat(o.approval_rate == null ? "n/a" : `${(o.approval_rate * 100).toFixed(1)}%`, "approved"),
-      stat(`${o.latency_ms.p95} ms`, `p95 latency (avg ${o.latency_ms.avg})`),
-      stat(cents(o.money_minor_units.approved_cents), "approved volume"),
-      stat(String(o.open_cases), "open fraud cases", o.open_cases > 0, "#cases"),
-      stat(String(o.pending_rule_suggestions), "rule suggestions waiting", o.pending_rule_suggestions > 0, "#rules"),
-      stat(String(o.outbox_backlog), "events queued")),
-  ];
-  if (!o.payments) {
-    parts.push(h("div", { class: "card" }, h("h3", {}, "No payments yet"),
-      h("p", { class: "muted" }, "Create a merchant under Merchants, then call the payment API (see Connect). To see the dashboard with realistic traffic right now, generate a demo run: fictional customers, test cards, and a mix of ordinary payments, issuer declines, 3-D Secure challenges, card testing and account takeover."),
-      can("settings:manage") ? h("button", { class: "primary", type: "button", onclick: async (e) => {
-        e.target.disabled = true;
-        try { const r = await api("/api/demo/traffic", { method: "POST", json: { count: 120, seed: 7 } }); toast(`Sent ${r.sent} demo payments`); initOverview(); } catch (err) { toast(err.message, true); e.target.disabled = false; }
-      } }, "Generate 120 demo payments") : null));
-  } else {
-    parts.push(h("div", { class: "cols" },
-      h("div", { class: "card" }, h("h3", {}, "Fraud score distribution"), histogram(o.score_histogram),
-        h("p", { class: "muted" }, `Decisions: ${["APPROVE", "CHALLENGE", "DECLINE"].map((d) => `${o.fraud_decisions[d] || 0} ${d.toLowerCase()}`).join(" · ")}`)),
-      h("div", { class: "card" }, h("h3", {}, "Payments per day"), dailyBars(o.daily))),
-    h("div", { class: "cols" },
-      h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Status"), h("th", { class: "num" }, "Payments"))),
-        h("tbody", {}, ...Object.entries(o.by_status).sort((a, b) => b[1] - a[1]).map(([s, n]) => h("tr", {}, h("td", {}, badge(PAYMENT, s)), h("td", { class: "num" }, n.toLocaleString())))))),
-      h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Connector"), h("th", { class: "num" }, "Payments"), h("th", { class: "num" }, "Approved"))),
-        h("tbody", {}, ...o.psp.map((p) => h("tr", {}, h("td", {}, p.psp), h("td", { class: "num" }, p.n), h("td", { class: "num" }, p.approved))))))));
+  fill(box, h("div", { class: "row" }, h("h1", {}, "Overview"), period), body);
+  let latest = 0;
+  await paint();
+
+  async function paint() {
+    const mine = ++latest;
+    let o;
+    try { o = await api(`/api/overview?days=${days}`); } catch (err) { if (mine === latest) fill(body, h("p", { class: "error" }, err.message)); return; }
+    if (mine !== latest) return;      // a newer period was chosen while this one loaded
+    const stat = (value, label, hot, href) => h("a", { class: `stat${hot ? " hot" : ""}`, href: href || "#overview" }, h("strong", {}, value), h("span", {}, label));
+    const parts = [
+      h("div", { class: "stats" },
+        stat(o.payments.toLocaleString(), "payments", false, "#payments"),
+        stat(o.approval_rate == null ? "n/a" : `${(o.approval_rate * 100).toFixed(1)}%`, "approved"),
+        stat(`${o.latency_ms.p95} ms`, `p95 latency (avg ${o.latency_ms.avg})`),
+        stat(cents(o.money_minor_units.approved_cents), "approved volume"),
+        stat(String(o.open_cases), "open fraud cases", o.open_cases > 0, "#cases"),
+        stat(String(o.pending_rule_suggestions), "rule suggestions waiting", o.pending_rule_suggestions > 0, "#rules"),
+        stat(String(o.outbox_backlog), "events queued")),
+    ];
+    if (!o.payments) {
+      parts.push(h("div", { class: "card" }, h("h3", {}, "No payments yet"),
+        h("p", { class: "muted" }, "Create a merchant under Merchants, then call the payment API (see Connect). To see the dashboard with realistic traffic right now, generate a demo run: fictional customers, test cards, and a mix of ordinary payments, issuer declines, 3-D Secure challenges, card testing and account takeover."),
+        can("settings:manage") ? h("button", { class: "primary", type: "button", onclick: async (e) => {
+          e.target.disabled = true;
+          try { const r = await api("/api/demo/traffic", { method: "POST", json: { count: 120, seed: 7 } }); toast(`Sent ${r.sent} demo payments`); paint(); } catch (err) { toast(err.message, true); e.target.disabled = false; }
+        } }, "Generate 120 demo payments") : null));
+    } else {
+      parts.push(h("div", { class: "cols" },
+        h("div", { class: "card" }, h("h3", {}, "Fraud score distribution"), histogram(o.score_histogram),
+          h("p", { class: "muted" }, `Decisions: ${["APPROVE", "CHALLENGE", "DECLINE"].map((d) => `${o.fraud_decisions[d] || 0} ${d.toLowerCase()}`).join(" · ")}`)),
+        h("div", { class: "card" }, h("h3", {}, "Payments per day"), dailyBars(o.daily))),
+      h("div", { class: "cols" },
+        h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Status"), h("th", { class: "num" }, "Payments"))),
+          h("tbody", {}, ...Object.entries(o.by_status).sort((a, b) => b[1] - a[1]).map(([s, n]) => h("tr", {}, h("td", {}, badge(PAYMENT, s)), h("td", { class: "num" }, n.toLocaleString())))))),
+        h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Connector"), h("th", { class: "num" }, "Payments"), h("th", { class: "num" }, "Approved"))),
+          h("tbody", {}, ...o.psp.map((p) => h("tr", {}, h("td", {}, p.psp), h("td", { class: "num" }, p.n), h("td", { class: "num" }, p.approved))))))));
+    }
+    fill(body, ...parts);
   }
-  fill(box, ...parts);
 }

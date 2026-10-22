@@ -34,6 +34,7 @@ PERMISSIONS = {
     "settings:manage": "LLM accounts, operator tokens, the vault password",
     "training:export": "see training-data statistics and export the captured examples (admin only; the export holds derived features and labels)",
     "model:manage": "capture and retention settings, label-aging, upload, activate and roll back fraud models (admin only)",
+    "data:reset": "wipe the transaction data and start fresh, keeping the configuration (admin only; cannot be undone)",
     "mcp:use": "use the MCP server",
     "metrics:scrape": "scrape /metrics",
     # merchant API keys

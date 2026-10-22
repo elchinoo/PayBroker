@@ -98,17 +98,27 @@ export async function openPayment(id, onChange) {
   fill($("detail-body"), ...parts);
 }
 
+// What an analyst has typed or picked on a case that is not resolved yet, by case id. The case list and the payment window
+// redraw after other actions (resolving another case, recording a chargeback); a redraw must never throw a half-written note away.
+const caseDrafts = new Map();
+
 export function caseCard(c, onDone) {
   if (c.status === "resolved") {
+    caseDrafts.delete(c.id);
     return h("div", { class: "card case resolved" }, h("h3", {}, `Case #${c.id}: resolved`), facts([["Decision", ACTION[c.analyst_decision] || c.analyst_decision], ["By", c.resolved_by], ["Note", c.note], ["When", fmtDateTime(c.resolved_at)]]));
   }
-  const sel = h("select", { id: `case-dec-${c.id}`, "aria-label": "Decision" }, ...Object.entries(ACTION).map(([v, t]) => h("option", { value: v }, t)));
-  const note = h("input", { id: `case-note-${c.id}`, maxlength: "300", placeholder: "Note (optional)", "aria-label": "Note" });
+  const draft = caseDrafts.get(c.id) || { decision: "", note: "" };
+  const keep = () => caseDrafts.set(c.id, { decision: sel.value, note: note.value });
+  const sel = h("select", { id: `case-dec-${c.id}`, "aria-label": "Decision", onchange: () => keep() }, ...Object.entries(ACTION).map(([v, t]) => h("option", { value: v }, t)));
+  const note = h("input", { id: `case-note-${c.id}`, maxlength: "300", placeholder: "Note (optional)", "aria-label": "Note", oninput: () => keep() });
+  if (draft.decision) sel.value = draft.decision;
+  note.value = draft.note;
   return h("div", { class: "card case" }, h("h3", {}, `Case #${c.id}: waiting for an analyst`),
     can("cases:review") ? h("div", { class: "grid-inline" }, sel, note, h("button", { class: "primary", type: "button", onclick: async () => {
       if (sel.value === "PERMANENT_BLOCK" && !confirm("Block this device, IP address and card from now on?")) return;
       try {
         const r = await api(`/api/cases/${c.id}/resolve`, { method: "POST", json: { decision: sel.value, note: note.value || null } });
+        caseDrafts.delete(c.id);
         toast(r.blocked.length ? `Resolved. Blocked: ${r.blocked.join(", ")}` : "Case resolved");
         onDone();
       } catch (err) { toast(err.message, true); }

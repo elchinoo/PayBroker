@@ -15,7 +15,7 @@ export function initCases() {
 
 async function load() {
   const box = $("case-list");
-  fill(box, h("p", { class: "loading" }, "Loading…"));
+  if (!box.children.length) fill(box, h("p", { class: "loading" }, "Loading…"));   // a reload keeps what is on screen until the new list arrives
   let items;
   try { items = (await api(`/api/cases?status=${$("case-status").value}`)).items; } catch (err) { toast(err.message, true); return; }
   if (!items.length) { fill(box, h("p", { class: "empty" }, "Nothing here. Flagged payments appear as soon as a score reaches 700.")); return; }

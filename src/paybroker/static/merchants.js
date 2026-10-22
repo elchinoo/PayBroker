@@ -37,7 +37,17 @@ async function openMerchant(id) {
   try { [m, conns, events] = await Promise.all([api(`/api/merchants/${id}`), api("/api/connectors"), api(`/api/webhook-events?merchant_id=${id}&limit=15`)]); } catch (err) { fill($("detail-body"), h("p", { class: "error" }, err.message)); return; }
   const manage = can("merchants:manage");
   const s = m.settings;
-  const reload = () => openMerchant(id);
+  // Only regions are redrawn after an action (the header, the key table). The settings and webhook forms, a key that was just
+  // revealed (it is shown once) and anything typed stay exactly as they are.
+  const head = h("div", {});
+  const keyRows = h("tbody", {});
+  let current = m;
+  const refreshMerchant = async () => {
+    try { current = { ...(await api(`/api/merchants/${id}`)) }; } catch (ex) { toast(ex.message, true); return false; }
+    paintHead();
+    paintKeys();
+    return true;
+  };
   const reveal = h("div", { hidden: true });
   const show = (title, secret) => { reveal.replaceChildren(h("p", { class: "warn-text" }, `${title} Copy it now: it is shown only once and only a hash (or an encrypted copy) is stored.`),
     h("div", { class: "codewrap" }, h("pre", { class: "code" }, h("code", {}, secret)), h("button", { class: "secondary small", type: "button", onclick: () => copy(secret, "Copied") }, "Copy"))); reveal.hidden = false; };
@@ -59,7 +69,7 @@ async function openMerchant(id) {
     const settings = { preferred_psps: [...prefs.querySelectorAll("input:checked")].map((i) => i.value), max_fee_bps: num(fee.value),
       weights: { auth: Number(wa.value), cost: Number(wc.value), latency: Number(wl.value) }, require_3ds_over_cents: num(t3.value),
       region: region.value.trim() || null, capture_method: cap.value, allowed_currencies: cur.value.split(/[\s,]+/).filter(Boolean).map((c) => c.toUpperCase()) };
-    try { await api(`/api/merchants/${id}`, { method: "PATCH", json: { settings } }); toast("Settings saved"); reload(); } catch (ex) { serr.textContent = ex.message; }
+    try { await api(`/api/merchants/${id}`, { method: "PATCH", json: { settings } }); toast("Settings saved"); } catch (ex) { serr.textContent = ex.message; }
   } }, h("h3", {}, "Routing and risk"), field("Preferred connectors (a small bonus in the score)", prefs),
   h("div", { class: "grid3" }, field("Maximum fee (basis points)", fee), field("Data-residency region", region), field("Ask for 3-D Secure at or above (cents)", t3)),
   h("div", { class: "grid3" }, field("Weight: authorization rate", wa), field("Weight: cost", wc), field("Weight: latency", wl)),
@@ -76,12 +86,24 @@ async function openMerchant(id) {
       try { const k = await api(`/api/merchants/${id}/keys`, { method: "POST", json: { kind: kkind.value, name: kname.value } }); kname.value = ""; show(`New ${k.kind} key.`, k.key); } catch (ex) { toast(ex.message, true); }
     } }, field("Name", kname), field("Kind", kkind), h("button", { class: "primary", type: "submit" }, "Create key")) : null,
     reveal,
-    h("table", {}, h("thead", {}, h("tr", {}, ...["Key", "Kind", "Name", "Last used", ""].map((t) => h("th", {}, t)))),
-      h("tbody", {}, m.keys.map((k) => h("tr", {}, h("td", {}, h("code", {}, `${k.prefix}…`)), h("td", {}, k.kind), h("td", {}, k.name), h("td", {}, fmtDate(k.last_used_at)),
-        h("td", { class: "actions" }, k.revoked_at ? h("span", { class: "muted" }, "revoked") : manage ? h("button", { class: "danger small", type: "button", onclick: async () => {
-          if (!confirm("Revoke this key? Servers using it stop working within seconds.")) return;
-          try { await api(`/api/merchants/${id}/keys/${k.id}`, { method: "DELETE" }); reload(); } catch (ex) { toast(ex.message, true); }
-        } }, "Revoke") : null))))));
+    h("table", {}, h("thead", {}, h("tr", {}, ...["Key", "Kind", "Name", "Last used", ""].map((t) => h("th", {}, t)))), keyRows));
+  function paintKeys() {
+    fill(keyRows, current.keys.map((k) => h("tr", {}, h("td", {}, h("code", {}, `${k.prefix}…`)), h("td", {}, k.kind), h("td", {}, k.name), h("td", {}, fmtDate(k.last_used_at)),
+      h("td", { class: "actions" }, k.revoked_at ? h("span", { class: "muted" }, "revoked") : manage ? h("button", { class: "danger small", type: "button", onclick: async () => {
+        if (!confirm("Revoke this key? Servers using it stop working within seconds.")) return;
+        try { await api(`/api/merchants/${id}/keys/${k.id}`, { method: "DELETE" }); await refreshMerchant(); } catch (ex) { toast(ex.message, true); }
+      } }, "Revoke") : null))));
+  }
+  function paintHead() {
+    fill(head,
+      h("div", { class: "row" }, h("h2", {}, current.name), h("span", { class: `badge ${current.status === "active" ? "ok" : "bad"}` }, current.status)),
+      h("p", { class: "muted" }, h("code", {}, current.id), ` · created ${fmtDateTime(current.created_at)}`),
+      manage ? h("div", { class: "btns" }, h("button", { class: "secondary", type: "button", onclick: async () => {
+        const next = current.status === "active" ? "suspended" : "active";
+        if (next === "suspended" && !confirm("Suspend this merchant? Its keys stop working immediately.")) return;
+        try { await api(`/api/merchants/${id}`, { method: "PATCH", json: { status: next } }); await refreshMerchant(); initMerchants(); } catch (ex) { toast(ex.message, true); }
+      } }, current.status === "active" ? "Suspend" : "Reactivate")) : null);
+  }
 
   // webhook
   const url = h("input", { id: "wh-url", type: "url", maxlength: "500", value: m.webhook_url || "", placeholder: "https://example.com/paybroker/webhooks" });
@@ -93,14 +115,10 @@ async function openMerchant(id) {
   field("URL", url), manage ? h("button", { class: "primary", type: "submit" }, m.webhook_url ? "Save and rotate the secret" : "Save") : null);
   if (!manage) url.disabled = true;
 
+  paintHead();
+  paintKeys();
   fill($("detail-body"),
-    h("div", { class: "row" }, h("h2", {}, m.name), h("span", { class: `badge ${m.status === "active" ? "ok" : "bad"}` }, m.status)),
-    h("p", { class: "muted" }, h("code", {}, m.id), ` · created ${fmtDateTime(m.created_at)}`),
-    manage ? h("div", { class: "btns" }, h("button", { class: "secondary", type: "button", onclick: async () => {
-      const next = m.status === "active" ? "suspended" : "active";
-      if (next === "suspended" && !confirm("Suspend this merchant? Its keys stop working immediately.")) return;
-      try { await api(`/api/merchants/${id}`, { method: "PATCH", json: { status: next } }); reload(); initMerchants(); } catch (ex) { toast(ex.message, true); }
-    } }, m.status === "active" ? "Suspend" : "Reactivate")) : null,
+    head,
     keys, settingsForm, whForm,
     events.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Recent event", "Type", "Status", "Attempts", "Last HTTP", "When"].map((t) => h("th", {}, t)))),
       h("tbody", {}, events.items.map((w) => h("tr", {}, h("td", {}, h("code", {}, w.event_id)), h("td", {}, w.type), h("td", {}, w.status), h("td", {}, w.attempts), h("td", {}, w.last_code ?? ""), h("td", {}, fmtDateTime(w.created_at))))))) : null);

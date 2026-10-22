@@ -9,6 +9,11 @@ def main(argv: list[str] | None = None) -> int:
     demo = sub.add_parser("demo", help="create a demo merchant and send simulated traffic through the broker")
     demo.add_argument("-n", type=int, default=200, help="number of payments")
     demo.add_argument("--seed", type=int, default=7)
+    rd = sub.add_parser("reset-data", help="wipe the transaction data (payments, fraud, cases, queue, feature store) and keep the configuration")
+    rd.add_argument("--yes", action="store_true", help="required: this cannot be undone")
+    rd.add_argument("--confirm", default="", help='the exact phrase "RESET PAYBROKER DATA"')
+    rd.add_argument("--keep-training-data", action="store_true", help="keep the captured training examples")
+    rd.add_argument("--keep-rule-suggestions", action="store_true", help="keep the suggested rules")
     sub.add_parser("serve", help="run the API + MCP server")
     sub.add_parser("reset-admin", help="forget the admin password and delete stored secrets (recovery)")
     sub.add_parser("start", help="container entrypoint: migrate, then serve")
@@ -35,10 +40,39 @@ def main(argv: list[str] | None = None) -> int:
         with connect() as conn:
             local.reset_admin(conn)
         print("admin password, vault and stored secrets were cleared; the setup code flow is active again")
+    elif args.cmd == "reset-data":
+        return _reset_data(args)
     elif args.cmd == "serve":
         _serve()
     elif args.cmd == "start":
         return _start()
+    return 0
+
+
+def _reset_data(args) -> int:
+    import getpass
+
+    from . import maintenance
+
+    if not args.yes:
+        print("refusing to delete without --yes (this cannot be undone)", file=sys.stderr)
+        return 2
+    try:
+        maintenance.check_phrase(args.confirm)
+    except maintenance.ResetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        out = maintenance.reset(actor=f"cli:{getpass.getuser()}", include_training_data=not args.keep_training_data,
+                                include_rule_suggestions=not args.keep_rule_suggestions)
+    except maintenance.ResetBusy as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    for table, n in out["deleted"].items():
+        print(f"{table}: {n} deleted")
+    for table in out["skipped"]:
+        print(f"{table}: kept")
+    print(f"done in {out['seconds']} s; the configuration (merchants, keys, webhooks, connectors, rules, settings, models, users) was kept")
     return 0
 
 

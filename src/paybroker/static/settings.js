@@ -1,34 +1,58 @@
 import { api } from "/kit/api.js";
 import { fmtDate, $, copy, field, fill, h, toast } from "/kit/ui.js";
+import { can } from "/kit/session.js";
+import { renderMaintenance } from "/static/maintenance.js";
 import { renderModel } from "/static/model.js";
 
 export async function initSettings() {
   const box = $("view-settings");
-  fill(box, h("h1", {}, "Settings"), h("div", { id: "set-accounts" }), h("div", { id: "set-model", class: "settings-block" }), h("div", { id: "set-security", class: "settings-block" }), h("div", { id: "set-demo", class: "settings-block" }));
+  fill(box, h("h1", {}, "Settings"), h("div", { id: "set-accounts" }), h("div", { id: "set-model", class: "settings-block" }), h("div", { id: "set-security", class: "settings-block" }), h("div", { id: "set-demo", class: "settings-block" }), can("data:reset") ? h("div", { id: "set-maintenance", class: "settings-block" }) : null);
   renderAccounts();
   renderModel($("set-model"));
   renderSecurity();
   renderDemo();
+  if (can("data:reset")) renderMaintenance($("set-maintenance"));
 }
 
 // ---- LLM accounts ---------------------------------------------------------------------------------
+// The block is built once; saving or deleting an account refreshes the table and the selector's options in place, so a
+// triage account the person has picked but not saved yet is not reset by an unrelated change.
+let accountsNow = null, firstChoice = false;
+
 async function renderAccounts() {
   const box = $("set-accounts");
   let acc;
-  try { acc = await api("/api/accounts"); } catch (err) { fill(box, h("p", { class: "error" }, err.message)); return; }
-  const sel = h("select", { id: "triage-select", "aria-label": "Account for AI triage" }, h("option", { value: "" }, "None (use the built-in rule-based triage)"),
-    ...acc.items.filter((a) => a.chat_model).map((a) => h("option", { value: a.id, selected: a.id === acc.triage_account }, `${a.name} · ${a.chat_model}`)));
+  try { acc = await api("/api/accounts"); } catch (err) { fill($("acc-table") || box, h("p", { class: "error" }, err.message)); return; }
+  if (!$("acc-table")) buildAccounts(box, acc);
+  paintAccounts(acc);
+}
+
+function buildAccounts(box, acc) {
+  const sel = h("select", { id: "triage-select", "aria-label": "Account for AI triage" });
+  fill(box,
+    h("h2", {}, "AI accounts"),
+    h("p", { class: "muted" }, "Tier 3 asks a language model to triage flagged payments and to suggest new rules. It is optional: without an account the broker uses a built-in rule-based triage. The model is sent only derived features and reason codes, never card data, names or e-mail addresses. Keys are stored encrypted."),
+    h("div", { class: "btns" }, h("button", { class: "primary", type: "button", onclick: () => editAccount(accountsNow, null) }, "Add an account")),
+    h("div", { id: "acc-table" }),
+    h("div", { class: "card" }, h("div", { class: "grid-inline" }, field("Account for AI triage and rule suggestions", sel),
+      h("button", { class: "primary", type: "button", onclick: async () => { try { await api("/api/triage-account", { method: "PUT", json: { account_id: sel.value ? Number(sel.value) : null } }); toast("Saved"); } catch (e) { toast(e.message, true); } } }, "Save"))));
+  firstChoice = true;
+}
+
+function paintAccounts(acc) {
+  accountsNow = acc;
+  const sel = $("triage-select");
+  const keep = firstChoice ? String(acc.triage_account ?? "") : sel.value;      // after the first paint the person's own choice wins
+  firstChoice = false;
+  const options = [h("option", { value: "" }, "None (use the built-in rule-based triage)"),
+    ...acc.items.filter((a) => a.chat_model).map((a) => h("option", { value: a.id }, `${a.name} · ${a.chat_model}`))];
+  fill(sel, options);
+  sel.value = options.some((o) => o.value === keep) ? keep : String(acc.triage_account ?? "");
   const list = acc.items.map((a) => h("tr", {}, h("td", { class: "title" }, a.name), h("td", {}, a.provider), h("td", {}, a.chat_model || h("span", { class: "muted" }, "none")),
     h("td", {}, a.has_key ? `…${a.api_key_last4}` : h("span", { class: "muted" }, "no key")),
     h("td", { class: "actions" }, h("button", { class: "secondary small", type: "button", onclick: () => editAccount(acc, a) }, "Edit"), " ",
       h("button", { class: "danger small", type: "button", onclick: async () => { if (!confirm(`Delete "${a.name}"?`)) return; try { await api(`/api/accounts/${a.id}`, { method: "DELETE" }); renderAccounts(); } catch (e) { toast(e.message, true); } } }, "Delete"))));
-  fill(box,
-    h("h2", {}, "AI accounts"),
-    h("p", { class: "muted" }, "Tier 3 asks a language model to triage flagged payments and to suggest new rules. It is optional: without an account the broker uses a built-in rule-based triage. The model is sent only derived features and reason codes, never card data, names or e-mail addresses. Keys are stored encrypted."),
-    h("div", { class: "btns" }, h("button", { class: "primary", type: "button", onclick: () => editAccount(acc, null) }, "Add an account")),
-    acc.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map((t) => h("th", {}, t)))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."),
-    h("div", { class: "card" }, h("div", { class: "grid-inline" }, field("Account for AI triage and rule suggestions", sel),
-      h("button", { class: "primary", type: "button", onclick: async () => { try { await api("/api/triage-account", { method: "PUT", json: { account_id: sel.value ? Number(sel.value) : null } }); toast("Saved"); } catch (e) { toast(e.message, true); } } }, "Save"))));
+  fill($("acc-table"), acc.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map((t) => h("th", {}, t)))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."));
 }
 
 function editAccount(acc, a) {

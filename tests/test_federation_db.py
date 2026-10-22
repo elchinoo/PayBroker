@@ -76,6 +76,27 @@ def test_roles_decide_what_a_person_may_do(client):
     assert client.get("/metrics", headers=admin).status_code == 200 and client.get("/metrics", headers=viewer).status_code == 403
 
 
+def test_only_the_admin_role_may_reset_the_data(client):
+    from paybroker.db import connect
+    url, phrase = "/api/admin/data/reset", {"confirm": "RESET PAYBROKER DATA"}
+    with connect() as conn:
+        conn.execute("INSERT INTO outbox (topic, payload) VALUES ('webhook', '{}')")
+        conn.commit()
+    for role in ("operator", "risk_manager", "analyst", "viewer"):
+        who = access(sub=f"u_{role}", roles=[f"paybroker:{role}"])
+        assert client.post(url, headers=who, json=phrase).status_code == 403, role
+        assert client.get(url, headers=who).status_code == 403, role
+    assert client.post(url, headers=access(roles=["otherapp:admin"]), json=phrase).status_code == 403
+    admin = access(sub="u_admin", name="Ada Admin", roles=["paybroker:admin"])
+    assert client.post(url, headers=admin, json={"confirm": "nope"}).status_code == 422
+    with connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM outbox").fetchone()["n"] == 1
+        conn.rollback()
+    r = client.post(url, headers=admin, json=phrase)
+    assert r.status_code == 200 and r.json()["deleted"]["outbox"] == 1
+    assert client.get(url, headers=admin).json()["recent"][0]["actor"] == "Ada Admin"
+
+
 def test_the_case_resolver_is_named_in_the_record(client):
     from paybroker import demo
     from paybroker.db import connect

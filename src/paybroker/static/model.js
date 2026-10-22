@@ -12,9 +12,22 @@ export async function renderModel(box) {
   if (!can("model:manage") && !can("training:export")) { fill(box); return; }
   let models, stats;
   try { [models, stats] = await Promise.all([api("/api/admin/models"), api("/api/admin/training/stats")]); } catch (err) { fill(box, h("h2", {}, "Model"), h("p", { class: "error" }, err.message)); return; }
-  const again = () => renderModel(box);
+  // The model list and the training statistics are regions that are refreshed in place after an action. The upload form and
+  // the training settings and export forms are built once: activating a model or purging rows never clears a half-filled form
+  // (notes, a version name, the chosen file, a retention value).
+  const listBox = h("div", { id: "model-list" }), statsBox = h("div", { id: "training-stats" }), hintBox = h("p", { class: "hint", id: "training-hint" });
+  const refreshModels = async () => {
+    try { models = await api("/api/admin/models"); } catch (e) { toast(e.message, true); return; }
+    fill(listBox, modelList(models, refreshModels));
+  };
+  const refreshStats = async () => {
+    try { stats = await api("/api/admin/training/stats"); } catch (e) { toast(e.message, true); return; }
+    paintStats(statsBox, hintBox, stats);
+  };
+  fill(listBox, modelList(models, refreshModels));
+  paintStats(statsBox, hintBox, stats);
   fill(box, h("h2", {}, "Model"), h("p", { class: "muted" }, "Tier 2 scores every payment with a gradient-boosted tree model. The bundled one is trained on synthetic data only. You can upload a model trained elsewhere and switch to it, or back, without rebuilding the image; other instances follow within about 30 seconds."),
-    modelList(models, again), uploadForm(models, again), trainingData(stats, again));
+    listBox, uploadForm(models, refreshModels), trainingData(stats, statsBox, hintBox, refreshStats));
 }
 
 // ---- models -----------------------------------------------------------------------------------------
@@ -55,6 +68,8 @@ function uploadForm(models, again) {
       try {
         const r = await api("/api/admin/models", { method: "POST", json: { model: doc, notes: notes.value, version: version.value || null, activate: activate.checked } });
         toast(`Uploaded ${r.version}${r.active ? " and activated it" : ""}`);
+        file.value = notes.value = version.value = "";
+        activate.checked = false;
         again();
       } catch (ex) { err.textContent = ex.message; }
     } }, field("Model file", file), field("Version name", version), field("Notes", notes), h("label", { class: "check" }, activate, " Activate right after upload"),
@@ -62,7 +77,15 @@ function uploadForm(models, again) {
 }
 
 // ---- training data ------------------------------------------------------------------------------------
-function trainingData(stats, again) {
+function paintStats(statsBox, hintBox, stats) {
+  const s = stats.settings;
+  const byModel = stats.per_model_version.map((m) => h("tr", {}, h("td", { class: "title" }, m.model_version), h("td", {}, num(m.rows)), h("td", {}, num(m.labeled)), h("td", {}, pct(m.fraud_rate)), h("td", {}, m.avg_score)));
+  hintBox.textContent = s.capture_source === "environment" ? "Capture is on because PAYBROKER_CAPTURE_TRAINING_DATA is set; saving here overrides it." : "";
+  fill(statsBox, h("div", { class: "card" }, h("p", {}, `${num(stats.rows)} rows, ${num(stats.labeled)} labeled (${num(stats.fraud)} fraud, fraud rate ${pct(stats.fraud_rate)}). Label sources: ${Object.entries(stats.label_sources).map(([k, v]) => `${k} ${num(v)}`).join(", ") || "none yet"}.`),
+    stats.per_model_version.length ? h("table", {}, h("thead", {}, h("tr", {}, ...["Model version", "Rows", "Labeled", "Fraud rate", "Average score"].map((t) => h("th", {}, t)))), h("tbody", {}, byModel)) : null));
+}
+
+function trainingData(stats, statsBox, hintBox, again) {
   const s = stats.settings;
   const capture = h("input", { id: "tr-capture", type: "checkbox", checked: s.capture });
   const retention = h("input", { id: "tr-retention", type: "number", min: "1", max: "3650", value: String(s.retention_days) });
@@ -75,16 +98,14 @@ function trainingData(stats, again) {
     a.addEventListener("click", () => { a.href = `/api/admin/training/export?format=${fmt}&labeled=${labeledOnly.checked}${since.value ? `&since=${since.value}` : ""}`; });
     return a;
   };
-  const byModel = stats.per_model_version.map((m) => h("tr", {}, h("td", { class: "title" }, m.model_version), h("td", {}, num(m.rows)), h("td", {}, num(m.labeled)), h("td", {}, pct(m.fraud_rate)), h("td", {}, m.avg_score)));
   return h("div", {}, h("h3", {}, "Training data"),
     h("p", { class: "muted" }, "Off by default. When on, every scored payment leaves one row: the 17 derived features, the model version, the score and decision, and the payment reference. Never a card, e-mail, IP address, device id or name. Labels come only from real outcomes: a fraud-coded chargeback, or an analyst resolving a case. Export the rows to retrain or improve the model."),
     h("form", { class: "card grid-inline", onsubmit: async (e) => {
       e.preventDefault();
       try { await api("/api/admin/training/settings", { method: "PUT", json: { capture: capture.checked, retention_days: Number(retention.value), max_rows: Number(maxRows.value) } }); toast("Saved"); again(); } catch (ex) { toast(ex.message, true); }
     } }, h("label", { class: "check" }, capture, " Capture training data"), field("Keep rows for (days)", retention), field("Row cap (oldest are purged first)", maxRows), h("button", { class: "primary", type: "submit" }, "Save")),
-    h("p", { class: "hint" }, s.capture_source === "environment" ? "Capture is on because PAYBROKER_CAPTURE_TRAINING_DATA is set; saving here overrides it." : ""),
-    h("div", { class: "card" }, h("p", {}, `${num(stats.rows)} rows, ${num(stats.labeled)} labeled (${num(stats.fraud)} fraud, fraud rate ${pct(stats.fraud_rate)}). Label sources: ${Object.entries(stats.label_sources).map(([k, v]) => `${k} ${num(v)}`).join(", ") || "none yet"}.`),
-      stats.per_model_version.length ? h("table", {}, h("thead", {}, h("tr", {}, ...["Model version", "Rows", "Labeled", "Fraud rate", "Average score"].map((t) => h("th", {}, t)))), h("tbody", {}, byModel)) : null),
+    hintBox,
+    statsBox,
     h("div", { class: "card grid-inline" }, h("label", { class: "check" }, labeledOnly, " Labeled rows only"), field("Since", since), exportLink("csv"), exportLink("ndjson")),
     h("p", { class: "hint" }, "Only an admin can export. The file lists the feature names and versions in its header. A model trained on its own past decisions inherits their bias: mix in other data and read the README before trusting it."),
     h("form", { class: "card grid-inline", onsubmit: async (e) => {

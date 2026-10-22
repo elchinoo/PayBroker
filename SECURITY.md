@@ -81,6 +81,13 @@ PCI-certified and must not be used with real card data. The model below is what 
   load time and the last good model keeps scoring. A model's version is shown to operators, never to merchants.
 - A model trained on its own decisions inherits their bias; the README lists the safeguards and the report warns about them.
 
+**Data reset**
+- `POST /api/admin/data/reset` and `paybroker reset-data` delete transaction data irreversibly, so the permission `data:reset` belongs to the
+  `admin` role and the `full` token scope only (never merchant keys, never `read`/`metrics`). The request must carry the exact phrase
+  `RESET PAYBROKER DATA`; a wrong one deletes nothing. It deletes in bounded chunks under an advisory lock, never touches configuration,
+  keys, users or secrets, and records who ran it, when and what it deleted in `admin_audit` (counts and options only, no secrets). The
+  command line needs `--yes` and the phrase, and is for people who already have database access.
+
 **Hardening**
 - Strict `Content-Security-Policy` (no inline script or style), `nosniff`, no framing, no referrer, no caching. All text
   reaches the page through `textContent`. Bodies are size-capped and unknown fields are rejected.
@@ -89,6 +96,6 @@ PCI-certified and must not be used with real card data. The model below is what 
 ## Known limits
 - Simulated connectors and a test-mode 3-D Secure page that anyone with the challenge id can complete.
 - In-memory rate limits and caches are per process.
-- No audit log of operator actions beyond case notes, rule authorship and webhook history (the identity provider keeps sign-in audit).
+- The only audit log of operator actions is `admin_audit` (data resets); otherwise there are case notes, rule authorship and webhook history (the identity provider keeps sign-in audit).
 - The sample model is not a measure of real fraud risk, and a model uploaded by an admin is only as good as the data it came from.
 - The training-capture setting and the active-model choice are cached per process for 30 seconds; another instance follows within that time.

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import accounts, auth, cases, demo, insights, merchants, rules, suggest, vault
+from . import accounts, auth, cases, demo, insights, maintenance, merchants, rules, suggest, vault
 from .db import connect
 from .llm_http import LLMError
 from .netguard import UnsafeURL
@@ -84,6 +84,12 @@ class TriageAccountBody(_B):
     account_id: int | None = None
 
 
+class ResetBody(_B):
+    confirm: str = Field(max_length=100, description=f'the exact phrase "{maintenance.PHRASE}"')
+    include_training_data: bool = True
+    include_rule_suggestions: bool = True
+
+
 class DemoBody(_B):
     count: int = Field(60, ge=1, le=500)
     seed: int = Field(7, ge=0, le=10**9)
@@ -93,6 +99,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     r = APIRouter(prefix="/api")
     read, review, manage_rules = Depends(require("payments:read")), Depends(require("cases:review")), Depends(require("rules:manage"))
     merch, settings = Depends(require("merchants:manage")), Depends(require("settings:manage"))
+    wipe = Depends(require("data:reset"))
 
     # ---- dashboard and payments ------------------------------------------------------------------------------
     @r.get("/overview", dependencies=[read])
@@ -395,5 +402,24 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     def demo_traffic(body: DemoBody, request: Request):
         with connect() as conn:
             return demo.run(conn, body.count, body.seed, public_url(request))
+
+    # ---- maintenance: wipe the transaction data, keep the configuration (admin only) --------------------------------
+    @r.get("/admin/data/reset", dependencies=[wipe])
+    def reset_preview():
+        with connect() as conn:
+            return maintenance.preview(conn)
+
+    @r.post("/admin/data/reset")
+    def reset_data(body: ResetBody, p=wipe):
+        try:
+            maintenance.check_phrase(body.confirm)
+            out = maintenance.reset(actor=p.actor, include_training_data=body.include_training_data,
+                                    include_rule_suggestions=body.include_rule_suggestions)
+        except maintenance.ResetBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except maintenance.ResetError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        forget_merchants()
+        return out
 
     return r
