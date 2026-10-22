@@ -60,6 +60,27 @@ PCI-certified and must not be used with real card data. The model below is what 
   Limitation: the host name is resolved once for the check and again by the HTTP client; run the server with egress rules if that matters.
 - Webhooks are signed `HMAC-SHA256(secret, timestamp.body)`; receivers should check the timestamp to refuse replays.
 
+**Training data and models**
+- Capture is **off by default** (an admin setting, or `PAYBROKER_CAPTURE_TRAINING_DATA` as the default). A captured row holds the 17 derived
+  feature numbers, the feature-layout hash, the model version, the score, the decision and the internal payment reference, plus a label and
+  its source. It never holds a card number, token, fingerprint, e-mail, IP address, device id, customer id or name; a test dumps the table
+  after payments with recognisable identities and asserts none of them appears, and that the export has exactly the documented columns.
+- Labels come only from outcomes a person or a network recorded (a fraud-coded chargeback, an analyst's case decision) or from an explicit
+  admin action (`label-aging`, which runs only when called and labels only approved, captured, undisputed payments). Nothing is guessed in the background.
+- **Retention** is enforced for everyone: rows older than the retention (default 180 days) and rows beyond the cap (default 5,000,000,
+  oldest first) are purged by the worker every ten minutes in bounded batches, even while capture is off, and on demand.
+- **Who may do what:** exporting and reading statistics needs `training:export`; the capture and retention settings, label-aging, purging and
+  every model action need `model:manage`. Both exist only in the `admin` role and the `full` token scope; analysts, risk managers, operators,
+  viewers, `read` and `metrics` tokens, merchant keys and MCP cannot use them (tests assert each). Exports are logged with the actor and row count.
+  An export is still sensitive: it is derived behavioural data about customers, joinable to payments by id. Treat the file like the database.
+- **Uploaded models are untrusted input.** They are validated before storage and again when loaded: the exact feature list, at most 500 trees of
+  depth 8, at most 2 MB, finite numbers only (`NaN` and `Infinity` are refused), every child after its parent with one parent each (a walk always
+  terminates and costs a bounded amount of work), and reference scores that the trees must reproduce. A model is data, never code: it is a JSON
+  document walked by a fixed loop, nothing in it is executed. The upload route has its own 2 MB body cap (the 64 KB cap stays everywhere else).
+  An upload never activates itself, versions are never overwritten, and the active one cannot be deleted. An invalid row written outside the API is refused at
+  load time and the last good model keeps scoring. A model's version is shown to operators, never to merchants.
+- A model trained on its own decisions inherits their bias; the README lists the safeguards and the report warns about them.
+
 **Hardening**
 - Strict `Content-Security-Policy` (no inline script or style), `nosniff`, no framing, no referrer, no caching. All text
   reaches the page through `textContent`. Bodies are size-capped and unknown fields are rejected.
@@ -69,4 +90,5 @@ PCI-certified and must not be used with real card data. The model below is what 
 - Simulated connectors and a test-mode 3-D Secure page that anyone with the challenge id can complete.
 - In-memory rate limits and caches are per process.
 - No audit log of operator actions beyond case notes, rule authorship and webhook history (the identity provider keeps sign-in audit).
-- The sample model is not a measure of real fraud risk.
+- The sample model is not a measure of real fraud risk, and a model uploaded by an admin is only as good as the data it came from.
+- The training-capture setting and the active-model choice are cached per process for 30 seconds; another instance follows within that time.

@@ -93,7 +93,8 @@ Deliveries are at least once: use `id` to deduplicate.
 ## Operator API (`/api`)
 
 Permissions (what a role or token scope grants): `payments:read`, `cases:review`, `rules:manage`, `merchants:manage`,
-`settings:manage`, `mcp:use`, `metrics:scrape`. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
+`settings:manage`, `training:export`, `model:manage`, `mcp:use`, `metrics:scrape`. The last two before `mcp:use` (`training:export` and
+`model:manage`) belong to the `admin` role and the `full` scope only. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
 Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token calls don't need it.
 
 | Call | Needs | Notes |
@@ -102,7 +103,7 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `GET /api/overview?days=` | `payments:read` | counts, approval rate, volume, latency, score histogram, connectors, queue |
 | `GET /api/payments?q=&status=&decision=&min_score=&merchant_id=&limit=&offset=` | `payments:read` | |
 | `GET /api/payments/{id}` | `payments:read` | the request, rules fired, score and reasons, features, timings and routing attempts, AI triage, case, 3-D Secure, webhooks, chargebacks |
-| `POST /api/payments/{id}/chargeback` `{amount?, reason}` | `cases:review` | updates the feature store |
+| `POST /api/payments/{id}/chargeback` `{amount?, reason, reason_code?}` | `cases:review` | updates the feature store; a fraud `reason_code` (10.1 to 10.5, 4837, 4840, 4863, 4870, 4871) labels the payment's training row as fraud |
 | `GET /api/cases?status=open\|resolved\|all` | `payments:read` | with the AI summary and recommendation |
 | `POST /api/cases/{id}/resolve` `{decision, note}` | `cases:review` | `PERMANENT_BLOCK`, `ALLOW_WITH_KYC`, `DISMISS_ALERT` |
 | `GET /api/rules`, `POST /api/rules`, `PATCH /api/rules/{id}` `{enabled}`, `DELETE /api/rules/{id}` | read / `rules:manage` | the definition is validated; the fields and operators are returned by the GET |
@@ -114,6 +115,16 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `GET/POST/PUT/DELETE /api/accounts`, `PUT /api/triage-account` | `settings:manage` | AI accounts; keys are never returned |
 | `GET/POST/DELETE /api/tokens` | `settings:manage` | operator tokens, shown once |
 | `POST /api/demo/traffic` `{count, seed}` | `settings:manage` | fictional payments through the real pipeline |
+| `GET /api/admin/training/settings`, `PUT` `{capture?, retention_days?, max_rows?}` | `training:export` or `model:manage` / `model:manage` | capture on or off (default off), retention 1 to 3650 days (default 180), row cap 1,000 to 50,000,000 (default 5,000,000) |
+| `GET /api/admin/training/stats` | `training:export` | rows, labeled, fraud, fraud rate, label sources, per model version, feature hash |
+| `GET /api/admin/training/export?format=csv\|ndjson&labeled=&since=&limit=` | `training:export` | streamed; CSV with `#` header comments (features, hash, model versions), NDJSON with a `_meta` first line; rows of an older feature layout are skipped |
+| `POST /api/admin/training/label-aging` `{days}` | `model:manage` | labels approved, captured, undisputed payments older than `days` as legitimate; returns `{labeled_legitimate}` |
+| `POST /api/admin/training/purge` | `model:manage` | applies retention and the row cap now; returns the counts |
+| `GET /api/admin/models` | `model:manage` | active model, the bundled one, uploaded versions and the limits |
+| `POST /api/admin/models?notes=&version=&activate=` | `model:manage` | body: the model file, or `{model, notes?, version?, activate?}`; up to 2 MB; 422 with the reason when invalid, 409 when the version exists |
+| `GET /api/admin/models/{id}` | `model:manage` | the model document |
+| `POST /api/admin/models/{id}/activate`, `POST /api/admin/models/use-bundled` | `model:manage` | switch (or roll back) the scoring model; other instances follow within about 30 s |
+| `DELETE /api/admin/models/{id}` | `model:manage` | refused (409) while active |
 | `GET /metrics` | `metrics:scrape` | Prometheus |
 
 Merchant settings (`PATCH /api/merchants/{id}` with `settings`): `preferred_psps`, `max_fee_bps`, `weights {auth, cost, latency}`,
