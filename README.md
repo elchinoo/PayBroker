@@ -91,7 +91,14 @@ Amounts are in minor units (cents). Test cards that behave differently:
 | `4100 0000 0000 0019` | the issuer declines as `stolen_card` |
 | `4000 0025 0000 3155` | the issuer always demands 3-D Secure |
 | `4000 0000 0000 0119` | the first connector answers 5xx; the cascade recovers on the next |
-| any Luhn-valid number starting `999999` | random behaviour from each connector's configured rates |
+| any 16-digit Luhn-valid number starting `99999901` | the issuer declines (`do_not_honor`) |
+| any 16-digit Luhn-valid number starting `99999902` | the issuer always demands 3-D Secure |
+| any 16-digit Luhn-valid number starting `99999903` | the first connector answers 5xx; the cascade recovers on the next |
+| any other Luhn-valid number starting `999999` | random behaviour from each connector's configured rates |
+
+The three `999999xx` prefixes exist so a simulator can give every customer its own card with the behaviour: one public
+number shared by hundreds of payments an hour has a huge per-card velocity and is fraud-rejected before it reaches the issuer,
+3-D Secure or connector logic.
 
 Anything else is refused (HTTP 422): the vault is for test cards only.
 

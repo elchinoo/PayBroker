@@ -13,6 +13,15 @@ from . import settings_store as store
 from .ids import hmac_hex, new_id
 
 TEST_BIN = "999999"
+# Behaviour by prefix inside the reserved range: a 16-digit PAN starting with one of these 8 digits behaves like the matching
+# public number above, so a simulator can give EVERY customer a unique card that still declines / needs 3-D Secure / hits a
+# connector failure. (One shared public number used by many payments trips the per-card velocity rules and is fraud-rejected
+# before it ever reaches the behaviour.) Every other 999999 number keeps the "random" behaviour.
+TEST_PREFIX_BEHAVIOR = {
+    "99999901": "decline",         # issuer says do_not_honor
+    "99999902": "requires_3ds",    # the issuer always demands 3-D Secure
+    "99999903": "psp_error",       # the first connector answers 5xx; the cascade recovers
+}
 # Public, well-known processor test numbers and how the simulated PSPs respond to them.
 TEST_CARDS = {
     "4242424242424242": ("visa", "approve"),
@@ -42,14 +51,30 @@ def luhn_ok(number: str) -> bool:
     return total % 10 == 0
 
 
-def make_test_number(rng: secrets.SystemRandom | None = None) -> str:
-    """A fresh Luhn-valid number in the reserved test BIN range (for simulators)."""
+def behavior_for(number: str) -> tuple[str, str] | None:
+    """(brand, behaviour) for a test PAN, or None if it is not a test card. Exact public numbers win; then the reserved
+    prefixes (16 digits only); then any other 999999 number is `random`."""
+    if number in TEST_CARDS:
+        return TEST_CARDS[number]
+    if number.startswith(TEST_BIN):
+        return "visa", (TEST_PREFIX_BEHAVIOR.get(number[:8], "random") if len(number) == 16 else "random")
+    return None
+
+
+def make_test_number(rng: secrets.SystemRandom | None = None, prefix: str = TEST_BIN) -> str:
+    """A fresh Luhn-valid 16-digit number in the reserved test BIN range (for simulators). `prefix` is `999999` (random
+    behaviour) or one of the TEST_PREFIX_BEHAVIOR prefixes."""
     r = rng or secrets.SystemRandom()
-    body = TEST_BIN + "".join(str(r.randrange(10)) for _ in range(9))
-    for check in range(10):
-        if luhn_ok(body + str(check)):
-            return body + str(check)
-    raise AssertionError("unreachable")
+    if not prefix.startswith(TEST_BIN) or len(prefix) > 15:
+        raise ValueError("prefix must start with the reserved test BIN")
+    while True:
+        body = prefix + "".join(str(r.randrange(10)) for _ in range(15 - len(prefix)))
+        for check in range(10):
+            if luhn_ok(body + str(check)):
+                number = body + str(check)
+                break
+        if prefix != TEST_BIN or number[:8] not in TEST_PREFIX_BEHAVIOR:   # an ordinary card never lands on a behaviour prefix
+            return number
 
 
 def _fingerprint_key(conn) -> str:
@@ -64,12 +89,10 @@ def tokenize(conn, merchant_id: str, number: str, exp_month: int, exp_year: int,
     number = re.sub(r"[ -]", "", str(number or ""))
     if not number.isdigit() or not 12 <= len(number) <= 19 or not luhn_ok(number):
         raise CardError("that is not a valid card number")
-    if number in TEST_CARDS:
-        brand, behavior = TEST_CARDS[number]
-    elif number.startswith(TEST_BIN):
-        brand, behavior = "visa", "random"
-    else:
+    found = behavior_for(number)
+    if found is None:
         raise CardError("this sample only accepts test cards (see the README for the list); it never stores real card numbers")
+    brand, behavior = found
     if cvc is not None and not re.fullmatch(r"\d{3,4}", str(cvc)):
         raise CardError("cvc must be 3 or 4 digits")  # checked, then discarded: it is never stored
     if isinstance(exp_year, int) and exp_year < 100:

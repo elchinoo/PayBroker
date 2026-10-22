@@ -19,7 +19,8 @@ are refused (413). Send `Authorization: Bearer <key>`.
 {"number": "4242424242424242", "exp_month": 12, "exp_year": 2035, "cvc": "123"}
 ```
 Returns `{token, brand, bin, last4, exp_month, exp_year, fingerprint}`. Only the public processor test cards and numbers
-starting `999999` are accepted; anything else is `422 INVALID_CARD`. The number and CVC are checked and discarded.
+starting `999999` are accepted (16-digit numbers starting `99999901` always decline, `99999902` always need 3-D Secure,
+`99999903` fail on the first connector and recover; see the README table); anything else is `422 INVALID_CARD`. The number and CVC are checked and discarded.
 
 ### `POST /v1/payments/authorize`
 ```json

@@ -11,7 +11,7 @@ PCI-certified and must not be used with real card data. The model below is what 
 ## Security model
 
 **Card data**
-- The vault accepts only the public processor test numbers and numbers in the reserved test BIN `999999`. Anything else is
+- The vault accepts only the public processor test numbers and numbers in the reserved test BIN `999999` (the prefixes `99999901`, `99999902` and `99999903` select a simulated behaviour, nothing more). Anything else is
   refused before it is stored, so the sample cannot be used to hold a real card.
 - Even test numbers are never stored: the table keeps brand, the 6-digit BIN, the last four, the expiry and a keyed
   HMAC of the number (to recognise the same card across tokens). The CVC is validated and discarded. A test asserts that no

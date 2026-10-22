@@ -11,7 +11,7 @@ from tests.conftest import needs_db
 
 pytestmark = needs_db
 
-from paybroker import demo, insights, webhooks, worker  # noqa: E402
+from paybroker import cards, demo, insights, webhooks, worker  # noqa: E402
 from paybroker.db import connect  # noqa: E402
 
 KEY = "operator-test-key-0123456789"
@@ -145,9 +145,42 @@ def test_3ds_failure_declines(client, shop):
     assert done.json()["status"] == "DECLINED"
 
 
+def _unique(prefix, n, seen=set()):  # noqa: B006 - unique across the module on purpose
+    import random
+    rng = random.Random(prefix)
+    out = []
+    while len(out) < n:
+        number = cards.make_test_number(rng, prefix)
+        if number not in seen:
+            seen.add(number)
+            out.append(number)
+    return out
+
+
+def test_unique_cards_with_a_reserved_prefix_behave_like_the_public_ones(client, shop, op):
+    _, sk, pk = shop
+    for i, number in enumerate(_unique("99999901", 3)):
+        r = pay(client, sk, tokenize(client, pk, number), f"pfx-decline-{i}", customer=f"cus_d{i}", ip=f"198.51.100.{30 + i}")
+        assert r.status_code == 402 and r.json()["error"]["decline_code"] == "do_not_honor", r.text
+    for i, number in enumerate(_unique("99999902", 3)):
+        r = pay(client, sk, tokenize(client, pk, number), f"pfx-3ds-{i}", customer=f"cus_s{i}", ip=f"198.51.100.{40 + i}")
+        assert r.status_code == 200 and r.json()["status"] == "REQUIRES_ACTION", r.text
+    for i, number in enumerate(_unique("99999903", 3)):
+        r = pay(client, sk, tokenize(client, pk, number), f"pfx-psp-{i}", customer=f"cus_p{i}", ip=f"198.51.100.{50 + i}")
+        assert r.status_code == 200 and r.json()["status"] == "AUTHORIZED", r.text
+        d = client.get(f"/api/payments/{r.json()['payment_id']}", headers=op).json()
+        assert len(d["fraud"]["timings"]["attempts"]) == 2
+    other = _unique("999999", 1)[0]                       # any other 999999 number is still "random" (never one of the above)
+    assert client.post("/v1/vault/tokens", json={"number": other, "exp_month": 12, "exp_year": 2035}, headers=pk).status_code == 201
+
+
+def _luhn_number(body):
+    return next(body + str(c) for c in range(10) if cards.luhn_ok(body + str(c)))   # Luhn-valid, but not in the test range
+
+
 def test_real_card_numbers_are_refused(client, shop):
     _, _, pk = shop
-    for number in ("4111111111111111", "4242424242424241", "abc"):
+    for number in ("4111111111111111", "4242424242424241", "abc", _luhn_number("19999901234567")):
         r = client.post("/v1/vault/tokens", json={"number": number, "exp_month": 12, "exp_year": 2035}, headers=pk)
         assert r.status_code == 422, number
     with connect() as conn:

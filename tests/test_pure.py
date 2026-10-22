@@ -91,6 +91,27 @@ def test_luhn_and_generated_test_numbers():
         assert n.startswith(cards.TEST_BIN) and cards.luhn_ok(n) and len(n) == 16
 
 
+def test_behavior_by_reserved_prefix():
+    import random
+    rng = random.Random(1)
+    for prefix, behavior in cards.TEST_PREFIX_BEHAVIOR.items():
+        seen = set()
+        for _ in range(30):
+            n = cards.make_test_number(rng, prefix)
+            assert n.startswith(prefix) and len(n) == 16 and cards.luhn_ok(n)
+            assert cards.behavior_for(n) == ("visa", behavior)
+            seen.add(n)
+        assert len(seen) == 30                                   # unique numbers, one behaviour
+    assert all(cards.behavior_for(cards.make_test_number(rng))[1] == "random" for _ in range(3000))   # never by chance
+    assert cards.behavior_for(cards.make_test_number(rng, "99999904"))[1] == "random"      # an unassigned prefix
+    assert cards.behavior_for("4000000000000002") == ("visa", "decline")      # the public numbers are unchanged
+    assert cards.behavior_for("4000002500003155") == ("visa", "requires_3ds")
+    assert cards.behavior_for("4000000000000119") == ("visa", "psp_error")
+    assert cards.behavior_for("4111111111111111") is None                      # a real-looking number is still refused
+    assert cards.behavior_for("4999990112345678") is None                      # the prefix must start the number
+    assert cards.behavior_for("99999901123") == ("visa", "random")             # the prefix rule is for 16 digits only
+
+
 def test_webhook_signature_is_stable_and_secret_dependent():
     a = webhooks.sign("whsec_a", "1700000000", '{"x":1}')
     assert a == webhooks.sign("whsec_a", "1700000000", '{"x":1}')
