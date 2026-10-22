@@ -1,11 +1,15 @@
 """Operator API: dashboard, payments, fraud cases, rules and suggestions, blacklist, merchants and their keys, connectors,
 LLM accounts, demo traffic. Every route names the permission it needs (see core.PERMISSIONS)."""
+import time
+from typing import Literal
+
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import accounts, auth, cases, demo, insights, maintenance, merchants, rules, suggest, vault
+from .chat import chat as run_chat
 from .db import connect
 from .llm_http import LLMError
 from .netguard import UnsafeURL
@@ -81,7 +85,11 @@ class AccountBody(_B):
 
 
 class TriageAccountBody(_B):
-    account_id: int | None = None
+    account_id: int | Literal["env"] | None = None
+
+
+class TestBody(_B):
+    target: Literal["chat"] = "chat"
 
 
 class ResetBody(_B):
@@ -354,7 +362,8 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     @r.get("/accounts", dependencies=[settings])
     def list_accounts():
         with connect() as conn:
-            out = {"items": accounts.list_accounts(conn), "presets": accounts.PRESETS, "triage_account": accounts.triage_account(conn)}
+            out = {"items": accounts.list_accounts(conn), "env": accounts.env_account(), "presets": accounts.PRESETS,
+                   "triage_account": accounts.triage_account(conn)}
             conn.rollback()
         return out
 
@@ -388,6 +397,25 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
                 accounts.delete(conn, account_id)
             return {"deleted": account_id}
         return _account_call(run)
+
+    @r.post("/accounts/{account}/test", dependencies=[settings])
+    def test_account(account: str, body: TestBody):
+        """One tiny real chat call so a wrong URL, key or model shows up now. The error text is the provider's own reason, redacted."""
+        if account != accounts.ENV and not account.isdigit():
+            raise HTTPException(422, "invalid account")
+        started = time.monotonic()
+        try:
+            with connect() as conn:
+                cfg = accounts.chat_config_for(conn, account if account == accounts.ENV else int(account))
+                conn.rollback()
+            reply = run_chat(cfg, [{"role": "user", "content": accounts.TEST_PROMPT}], max_tokens=accounts.TEST_MAX_TOKENS)
+        except vault.VaultLocked as exc:
+            raise HTTPException(423, str(exc)) from exc
+        except LLMError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        except (accounts.AccountError, UnsafeURL, vault.VaultError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"ok": True, "ms": int((time.monotonic() - started) * 1000), "reply": reply["text"][:60]}
 
     @r.put("/triage-account", dependencies=[settings])
     def set_triage(body: TriageAccountBody):

@@ -378,3 +378,23 @@ def test_feature_hash_identifies_the_layout():
     assert training_data.parse_since("2026-01-31").year == 2026 and training_data.parse_since(None) is None
     with pytest.raises(training_data.TrainingError):
         training_data.parse_since("last tuesday")
+
+
+def test_llm_environment_contract_matches_trustdesk(monkeypatch, tmp_path):
+    from paybroker import accounts
+    from paybroker.config import get_settings
+
+    for v in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_API_KEY_FILE", "LLM_CHAT_MODEL"):
+        monkeypatch.delenv(v, raising=False)
+    assert accounts.env_account() is None and get_settings().llm_api_key == ""
+    f = tmp_path / "k"
+    f.write_text("file-key\nignored\n")
+    monkeypatch.setenv("LLM_BASE_URL", "https://gw.example/v1/")
+    monkeypatch.setenv("LLM_CHAT_MODEL", "qwen3")
+    monkeypatch.setenv("LLM_API_KEY_FILE", str(f))
+    s = get_settings()
+    assert (s.llm_base_url, s.llm_chat_model, s.llm_api_key) == ("https://gw.example/v1", "qwen3", "file-key")
+    monkeypatch.setenv("LLM_API_KEY", "env-key")        # the variable wins over the file
+    assert get_settings().llm_api_key == "env-key"
+    env = accounts.env_account()
+    assert env["id"] == "env" and env["has_key"] and "env-key" not in str(env) and "file-key" not in str(env)

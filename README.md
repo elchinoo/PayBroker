@@ -291,6 +291,29 @@ connector and training-setting caches hold configuration, which is kept), so oth
 5 to 30 seconds anyway. Payments sent while a reset runs may survive it; pause the senders first. Sequences are not rewound and the
 space is returned to the table by autovacuum.
 
+## AI provider (the shared LLM gateway first)
+
+The AI triage and the rule suggestions need an OpenAI-compatible chat endpoint. In the ecosystem every app gets its model from the
+shared **LLM gateway** (`<gateway>/v1`) through an environment contract that `ecoctl` injects at deploy time; PayBroker reads the same
+variables as TrustDesk and PagerLens:
+
+| Variable | Meaning |
+|---|---|
+| `LLM_BASE_URL` | The gateway's base URL, for example `https://<gateway-sandbox>/v1`. Must be `https://` (plain `http://` only for `localhost`), without credentials or a query string. Empty means no environment account. |
+| `LLM_API_KEY` or `LLM_API_KEY_FILE` | The gateway key; the variable wins, else the first line of the file (default `/etc/paybroker/llm_api_key`). |
+| `LLM_CHAT_MODEL` | The chat model to use. Without it the environment account cannot chat. |
+
+When `LLM_BASE_URL` is set, Settings > AI accounts shows a built-in account **Environment (server settings)**, marked "from environment":
+read-only (it cannot be edited or deleted through the UI or the API), its key is never shown or returned, and it needs no vault, so it keeps
+working after a restart while the vault is still locked. It is used for triage and rule suggestions **by default** when no account has been
+chosen, and it can be chosen explicitly like any other account. Being set by the operator, its URL is trusted and not subject to the
+private-address check (the gateway is another sandbox's URL). You can still add your own accounts (OpenAI, OpenRouter, a local server...)
+under Settings; those keys are stored encrypted and their URLs are checked before every call.
+
+Every account has a **Test chat** button. It sends a tiny request (`max_tokens=64`) and shows the failure reason verbatim. A reasoning
+("thinking") model that uses its whole budget before answering is reported as such, with its `finish_reason` and token count, rather than as
+an empty answer; raise the model's token limit or pick a model without a thinking phase.
+
 ## Roles and single sign-on
 
 Standalone, the first-run admin has everything. Federated with the identity provider (`PAYBROKER_OIDC_ISSUER`, client id
@@ -316,6 +339,7 @@ of credential: they can reach only the payment API, never an operator route, and
 | `PAYBROKER_PUBLIC_URL` | Base URL used in 3-D Secure links (default: the request's own address). |
 | `PAYBROKER_ENCRYPTION_KEY[_FILE]` | Platform secret that lets the vault unlock itself after a restart (webhook secrets and AI keys need it). |
 | `PAYBROKER_API_KEY[_FILE]` | Optional static full-access operator key. Prefer operator tokens. |
+| `LLM_BASE_URL`, `LLM_API_KEY[_FILE]`, `LLM_CHAT_MODEL` | The shared LLM gateway as the built-in "env" AI account, see [AI provider](#ai-provider-the-shared-llm-gateway-first). |
 | `PAYBROKER_ALLOW_PRIVATE_URLS` | Allow AI provider and webhook URLs on private networks (local testing only). |
 | `PAYBROKER_CAPTURE_TRAINING_DATA` | `1` captures training data when no stored setting says otherwise (default off). |
 | `PAYBROKER_TRAINING_RETENTION_DAYS`, `PAYBROKER_TRAINING_MAX_ROWS` | Defaults for the retention (180 days) and row cap (5,000,000) until set in Settings > Model. |

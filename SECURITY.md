@@ -58,6 +58,12 @@ PCI-certified and must not be used with real card data. The model below is what 
 - Provider and webhook URLs are validated before every call: `https` only (unless private URLs are explicitly allowed), no
   embedded credentials, no loopback, private, link-local or carrier-grade-NAT addresses, no redirects, bounded responses.
   Limitation: the host name is resolved once for the check and again by the HTTP client; run the server with egress rules if that matters.
+- The environment LLM account (`LLM_BASE_URL`, `LLM_API_KEY` or `LLM_API_KEY_FILE`, `LLM_CHAT_MODEL`) is operator-set, so, like the
+  other apps, its URL is trusted and skips the private-address check (the shared gateway is another sandbox's URL); it must still be an
+  `https` URL without credentials or a query string, with plain `http` accepted for `localhost` only, and redirects are never followed. The key
+  lives only in the process environment or the mounted file: it is not stored in the database, never returned by any API (the account is
+  read-only and cannot be written or deleted through the API), never logged, and redacted from provider error messages. It needs no vault,
+  so triage keeps working while the vault is locked. The model still receives derived features and reason codes only.
 - Webhooks are signed `HMAC-SHA256(secret, timestamp.body)`; receivers should check the timestamp to refuse replays.
 
 **Training data and models**

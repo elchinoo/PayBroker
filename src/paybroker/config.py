@@ -11,6 +11,9 @@ class Settings:
     public_url: str
     role: str               # api | worker | all
     pool_max: int
+    llm_base_url: str       # the shared LLM gateway (OpenAI-compatible `<gateway>/v1`), injected by ecoctl at deploy time
+    llm_api_key: str
+    llm_chat_model: str
 
 
 def get_settings() -> Settings:
@@ -22,4 +25,8 @@ def get_settings() -> Settings:
         public_url=os.environ.get("PAYBROKER_PUBLIC_URL", "").rstrip("/"),
         role=role if role in {"api", "worker", "all"} else "all",
         pool_max=int(os.environ.get("PAYBROKER_POOL_MAX", "20")),
+        # Same names and meaning as TrustDesk and PagerLens: the environment contract of the ecosystem.
+        llm_base_url=os.environ.get("LLM_BASE_URL", "").rstrip("/"),
+        llm_api_key=read_secret("LLM_API_KEY", "/etc/paybroker/llm_api_key"),
+        llm_chat_model=os.environ.get("LLM_CHAT_MODEL", ""),
     )

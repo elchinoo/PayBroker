@@ -31,11 +31,11 @@ function buildAccounts(box, acc) {
   const sel = h("select", { id: "triage-select", "aria-label": "Account for AI triage" });
   fill(box,
     h("h2", {}, "AI accounts"),
-    h("p", { class: "muted" }, "Tier 3 asks a language model to triage flagged payments and to suggest new rules. It is optional: without an account the broker uses a built-in rule-based triage. The model is sent only derived features and reason codes, never card data, names or e-mail addresses. Keys are stored encrypted."),
+    h("p", { class: "muted" }, "Tier 3 asks a language model to triage flagged payments and to suggest new rules. It is optional: an account provided by the environment (the shared LLM gateway) is used by default; with no account at all the broker uses a built-in rule-based triage. The model is sent only derived features and reason codes, never card data, names or e-mail addresses. Keys are stored encrypted."),
     h("div", { class: "btns" }, h("button", { class: "primary", type: "button", onclick: () => editAccount(accountsNow, null) }, "Add an account")),
     h("div", { id: "acc-table" }),
     h("div", { class: "card" }, h("div", { class: "grid-inline" }, field("Account for AI triage and rule suggestions", sel),
-      h("button", { class: "primary", type: "button", onclick: async () => { try { await api("/api/triage-account", { method: "PUT", json: { account_id: sel.value ? Number(sel.value) : null } }); toast("Saved"); } catch (e) { toast(e.message, true); } } }, "Save"))));
+      h("button", { class: "primary", type: "button", onclick: async () => { try { await api("/api/triage-account", { method: "PUT", json: { account_id: sel.value === "env" ? "env" : sel.value ? Number(sel.value) : null } }); toast("Saved"); } catch (e) { toast(e.message, true); } } }, "Save"))));
   firstChoice = true;
 }
 
@@ -45,14 +45,28 @@ function paintAccounts(acc) {
   const keep = firstChoice ? String(acc.triage_account ?? "") : sel.value;      // after the first paint the person's own choice wins
   firstChoice = false;
   const options = [h("option", { value: "" }, "None (use the built-in rule-based triage)"),
-    ...acc.items.filter((a) => a.chat_model).map((a) => h("option", { value: a.id }, `${a.name} · ${a.chat_model}`))];
+    ...[...(acc.env && acc.env.chat_model && !acc.env.error ? [acc.env] : []), ...acc.items.filter((a) => a.chat_model)].map((a) => h("option", { value: a.id }, `${a.name} · ${a.chat_model}`))];
   fill(sel, options);
   sel.value = options.some((o) => o.value === keep) ? keep : String(acc.triage_account ?? "");
-  const list = acc.items.map((a) => h("tr", {}, h("td", { class: "title" }, a.name), h("td", {}, a.provider), h("td", {}, a.chat_model || h("span", { class: "muted" }, "none")),
+  const test = (a) => async (e) => {
+    const out = $(`acc-test-${a.id}`);
+    e.target.disabled = true;
+    out.className = "muted";
+    out.textContent = "Testing…";
+    try { const r = await api(`/api/accounts/${a.id}/test`, { method: "POST", json: { target: "chat" } }); out.className = "ok"; out.textContent = `Chat works (${r.ms} ms). Reply: "${r.reply}"`; }
+    catch (err) { out.className = "error"; out.textContent = err.message; }   // the provider's own reason, verbatim
+    finally { e.target.disabled = false; }
+  };
+  const testCell = (a) => h("td", {}, a.chat_model && !a.error ? h("button", { class: "secondary small", type: "button", onclick: test(a) }, "Test chat") : null, " ", h("span", { id: `acc-test-${a.id}`, role: "status" }));
+  const envRow = acc.env ? [h("tr", {}, h("td", { class: "title" }, acc.env.name), h("td", {}, h("span", { class: "badge plain" }, "from environment")),
+    h("td", {}, acc.env.chat_model || h("span", { class: "muted" }, "none (set LLM_CHAT_MODEL)")),
+    h("td", {}, acc.env.has_key ? "set by the server" : h("span", { class: "muted" }, "no key")),
+    h("td", { class: "actions" }, testCell(acc.env), acc.env.error ? h("span", { class: "error" }, acc.env.error) : null))] : [];
+  const list = [...envRow, ...acc.items.map((a) => h("tr", {}, h("td", { class: "title" }, a.name), h("td", {}, a.provider), h("td", {}, a.chat_model || h("span", { class: "muted" }, "none")),
     h("td", {}, a.has_key ? `…${a.api_key_last4}` : h("span", { class: "muted" }, "no key")),
-    h("td", { class: "actions" }, h("button", { class: "secondary small", type: "button", onclick: () => editAccount(acc, a) }, "Edit"), " ",
-      h("button", { class: "danger small", type: "button", onclick: async () => { if (!confirm(`Delete "${a.name}"?`)) return; try { await api(`/api/accounts/${a.id}`, { method: "DELETE" }); renderAccounts(); } catch (e) { toast(e.message, true); } } }, "Delete"))));
-  fill($("acc-table"), acc.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map((t) => h("th", {}, t)))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."));
+    h("td", { class: "actions" }, testCell(a), " ", h("button", { class: "secondary small", type: "button", onclick: () => editAccount(acc, a) }, "Edit"), " ",
+      h("button", { class: "danger small", type: "button", onclick: async () => { if (!confirm(`Delete "${a.name}"?`)) return; try { await api(`/api/accounts/${a.id}`, { method: "DELETE" }); renderAccounts(); } catch (e) { toast(e.message, true); } } }, "Delete"))))];
+  fill($("acc-table"), list.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map((t) => h("th", {}, t)))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."));
 }
 
 function editAccount(acc, a) {
