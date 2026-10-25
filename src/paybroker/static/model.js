@@ -1,7 +1,7 @@
 // Settings > Model: which fraud model scores, uploading and rolling back models, and the opt-in training data.
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
-import { fmtDate, $, field, fill, h, toast } from "/kit/ui.js";
+import { fmtDate, $, field, fill, h, toast, confirmDialog } from "/kit/ui.js";
 
 const num = (n) => (n == null ? "" : Number(n).toLocaleString());
 const pct = (r) => (r == null ? "n/a" : `${(r * 100).toFixed(2)}%`);
@@ -42,7 +42,7 @@ function modelList(models, again) {
       h("td", {}, h("span", { class: `badge ${m.active ? "ok" : "plain"}` }, m.active ? "active" : "inactive")),
       h("td", { class: "actions" }, m.active ? null : [
         h("button", { class: "secondary small", type: "button", onclick: () => act(m.id, `Activated ${m.version}`) }, "Activate"), " ",
-        h("button", { class: "danger small", type: "button", onclick: async () => { if (!confirm(`Delete model ${m.version}? This cannot be undone.`)) return; try { await api(`/api/admin/models/${m.id}`, { method: "DELETE" }); again(); } catch (e) { toast(e.message, true); } } }, "Delete")])));
+        h("button", { class: "danger small", type: "button", onclick: async () => { if (!(await confirmDialog(`Delete model ${m.version}? This cannot be undone.`, { title: "Delete model", confirmLabel: "Delete", danger: true }))) return; try { await api(`/api/admin/models/${m.id}`, { method: "DELETE" }); again(); } catch (e) { toast(e.message, true); } } }, "Delete")])));
   }
   return h("div", {}, h("h3", {}, "Models"),
     h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Version", "Uploaded", "Trees", "Size", "State", ""].map((t) => h("th", {}, t)))), h("tbody", {}, rows))),
@@ -110,7 +110,7 @@ function trainingData(stats, statsBox, hintBox, again) {
     h("p", { class: "hint" }, "Only an admin can export. The file lists the feature names and versions in its header. A model trained on its own past decisions inherits their bias: mix in other data and read the README before trusting it."),
     h("form", { class: "card grid-inline", onsubmit: async (e) => {
       e.preventDefault();
-      if (!confirm(`Label every approved, captured payment older than ${days.value} days with no dispute and no open case as legitimate? This is a guess about silence, covers approved payments only, and cannot be undone.`)) return;
+      if (!(await confirmDialog(`Label every approved, captured payment older than ${days.value} days with no dispute and no open case as legitimate? This is a guess about silence, covers approved payments only, and cannot be undone.`, { title: "Label as legitimate", confirmLabel: "Label", danger: true }))) return;
       try { const r = await api("/api/admin/training/label-aging", { method: "POST", json: { days: Number(days.value) } }); toast(`${num(r.labeled_legitimate)} rows labeled legitimate`); again(); } catch (ex) { toast(ex.message, true); }
     } }, field("Label by aging: no dispute after (days)", days), h("button", { class: "secondary", type: "submit" }, "Label as legitimate")),
     h("div", { class: "btns" }, h("button", { class: "secondary", type: "button", onclick: async () => {

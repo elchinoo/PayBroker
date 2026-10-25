@@ -1,4 +1,5 @@
 """The pages' regression tests under tests/ui run in node against a tiny fake DOM (no browser, no server). Skipped without node."""
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,7 +23,7 @@ def test_page_script(script):
 
 def test_every_page_has_a_regression_script():
     assert {"cases_typing.mjs", "overview_focus.mjs", "rules_typing.mjs", "merchants_typing.mjs", "settings_typing.mjs",
-            "payments_typing.mjs", "maintenance_panel.mjs", "triage_typing.mjs"} <= set(SCRIPTS)
+            "payments_typing.mjs", "maintenance_panel.mjs", "triage_typing.mjs", "dialogs.mjs"} <= set(SCRIPTS)
 
 
 def test_the_pages_never_build_markup_from_strings():
@@ -30,3 +31,10 @@ def test_the_pages_never_build_markup_from_strings():
         src = js.read_text()
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
             assert bad not in src, f"{js.name} uses {bad}"
+
+
+def test_the_pages_never_use_native_dialogs():
+    native = re.compile(r"(?<![\w.])(?:window\.)?(?:confirm|alert|prompt)\s*\(")   # confirmDialog( and promptDialog( do not match
+    for page in [*STATIC.glob("*.js"), *STATIC.glob("*.html")]:
+        for n, line in enumerate(page.read_text().splitlines(), 1):
+            assert not native.search(line), f"{page.name}:{n} calls a native dialog; use confirmDialog/promptDialog from /kit/ui.js"

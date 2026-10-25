@@ -1,6 +1,6 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
-import { $, copy, field, fill, fmtDate, fmtDateTime, h, toast } from "/kit/ui.js";
+import { $, copy, field, fill, fmtDate, fmtDateTime, h, toast, confirmDialog } from "/kit/ui.js";
 
 export async function initMerchants() {
   const box = $("view-merchants");
@@ -104,7 +104,7 @@ async function openMerchant(id) {
   function paintKeys() {
     fill(keyRows, current.keys.map((k) => h("tr", {}, h("td", {}, h("code", {}, `${k.prefix}…`)), h("td", {}, k.kind), h("td", {}, k.name), h("td", {}, fmtDate(k.last_used_at)),
       h("td", { class: "actions" }, k.revoked_at ? h("span", { class: "muted" }, "revoked") : manage ? h("button", { class: "danger small", type: "button", onclick: async () => {
-        if (!confirm("Revoke this key? Servers using it stop working within seconds.")) return;
+        if (!(await confirmDialog("Revoke this key? Servers using it stop working within seconds.", { title: "Revoke key", confirmLabel: "Revoke", danger: true }))) return;
         try { await api(`/api/merchants/${id}/keys/${k.id}`, { method: "DELETE" }); await refreshMerchant(); } catch (ex) { toast(ex.message, true); }
       } }, "Revoke") : null))));
   }
@@ -114,7 +114,7 @@ async function openMerchant(id) {
       h("p", { class: "muted" }, h("code", {}, current.id), ` · created ${fmtDateTime(current.created_at)}`),
       manage ? h("div", { class: "btns" }, h("button", { class: "secondary", type: "button", onclick: async () => {
         const next = current.status === "active" ? "suspended" : "active";
-        if (next === "suspended" && !confirm("Suspend this merchant? Its keys stop working immediately.")) return;
+        if (next === "suspended" && !(await confirmDialog("Suspend this merchant? Its keys stop working immediately.", { title: "Suspend merchant", confirmLabel: "Suspend", danger: true }))) return;
         try { await api(`/api/merchants/${id}`, { method: "PATCH", json: { status: next } }); await refreshMerchant(); initMerchants(); } catch (ex) { toast(ex.message, true); }
       } }, current.status === "active" ? "Suspend" : "Reactivate")) : null);
   }

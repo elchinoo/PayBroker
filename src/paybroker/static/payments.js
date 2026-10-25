@@ -1,6 +1,6 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
-import { $, badge, fill, fmtDateTime, h, toast } from "/kit/ui.js";
+import { $, badge, fill, fmtDateTime, h, toast, confirmDialog, promptDialog } from "/kit/ui.js";
 import { ACTION, cents, DECISION, gauge, PAYMENT, pills } from "/static/common.js";
 
 const PAGE = 25;
@@ -90,7 +90,7 @@ export async function openPayment(id, onChange) {
     h("tbody", {}, ...d.webhooks.map((w) => h("tr", {}, h("td", {}, h("code", {}, w.event_id)), h("td", {}, w.type), h("td", {}, w.status), h("td", {}, w.attempts), h("td", {}, w.last_code ?? "")))))));
   if (can("cases:review") && ["AUTHORIZED", "CAPTURED", "PARTIALLY_REFUNDED", "REFUNDED"].includes(p.status)) {
     parts.push(h("div", { class: "btns" }, h("button", { class: "secondary", type: "button", onclick: async () => {
-      const reason = prompt("Chargeback reason (shown to analysts; the whole amount is charged back):", "customer disputes the charge");
+      const reason = await promptDialog("Shown to analysts; the whole amount is charged back.", { title: "Record a chargeback", label: "Chargeback reason", defaultValue: "customer disputes the charge", required: true, confirmLabel: "Record chargeback" });
       if (reason === null) return;
       try { await api(`/api/payments/${encodeURIComponent(p.payment_id)}/chargeback`, { method: "POST", json: { reason } }); toast("Chargeback recorded; the feature store was updated"); refresh(); } catch (err) { toast(err.message, true); }
     } }, "Record a chargeback")));
@@ -115,7 +115,7 @@ export function caseCard(c, onDone) {
   note.value = draft.note;
   return h("div", { class: "card case" }, h("h3", {}, `Case #${c.id}: waiting for an analyst`),
     can("cases:review") ? h("div", { class: "grid-inline" }, sel, note, h("button", { class: "primary", type: "button", onclick: async () => {
-      if (sel.value === "PERMANENT_BLOCK" && !confirm("Block this device, IP address and card from now on?")) return;
+      if (sel.value === "PERMANENT_BLOCK" && !(await confirmDialog("Block this device, IP address and card from now on?", { title: "Block permanently", confirmLabel: "Block", danger: true }))) return;
       try {
         const r = await api(`/api/cases/${c.id}/resolve`, { method: "POST", json: { decision: sel.value, note: note.value || null } });
         caseDrafts.delete(c.id);

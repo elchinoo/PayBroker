@@ -1,6 +1,6 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
-import { $, field, fill, fmtDate, h, toast } from "/kit/ui.js";
+import { $, field, fill, fmtDate, h, toast, confirmDialog } from "/kit/ui.js";
 
 const EXAMPLE = `{"all": [
   {"field": "checkout_seconds", "op": "<", "value": 5},
@@ -33,7 +33,7 @@ export async function initRules() {
       h("td", {}, r.created_by), h("td", {}, r.enabled ? "on" : h("span", { class: "muted" }, "off")),
       h("td", { class: "actions" }, manage ? [
         h("button", { class: "secondary small", type: "button", onclick: () => act(() => api(`/api/rules/${r.id}`, { method: "PATCH", json: { enabled: !r.enabled } })) }, r.enabled ? "Turn off" : "Turn on"),
-        " ", h("button", { class: "danger small", type: "button", onclick: () => { if (confirm(`Delete rule "${r.name}"?`)) act(() => api(`/api/rules/${r.id}`, { method: "DELETE" })); } }, "Delete")] : null)))))));
+        " ", h("button", { class: "danger small", type: "button", onclick: async () => { if (await confirmDialog(`Delete rule "${r.name}"?`, { title: "Delete rule", confirmLabel: "Delete", danger: true })) act(() => api(`/api/rules/${r.id}`, { method: "DELETE" })); } }, "Delete")] : null)))))));
 
     fill(suggBox, sugg.items.length ? sugg.items.map((s) => h("div", { class: "card" }, h("div", { class: "row" }, h("h3", {}, s.name), h("span", { class: "badge alt" }, s.source === "llm" ? "proposed by the AI" : "from the statistics")),
       h("p", {}, s.rationale || ""), h("code", { class: "json" }, JSON.stringify(s.definition)), h("p", { class: "muted" }, `would ${s.action}; evidence: ${JSON.stringify(s.evidence)}`),

@@ -1,5 +1,5 @@
 import { api } from "/kit/api.js";
-import { fmtDate, $, copy, field, fill, h, toast } from "/kit/ui.js";
+import { fmtDate, $, copy, field, fill, h, toast, confirmDialog } from "/kit/ui.js";
 import { can } from "/kit/session.js";
 import { renderMaintenance } from "/static/maintenance.js";
 import { renderModel } from "/static/model.js";
@@ -67,7 +67,7 @@ function paintAccounts(acc) {
   const list = [...envRow, ...acc.items.map((a) => h("tr", {}, h("td", { class: "title" }, a.name), h("td", {}, a.provider), h("td", {}, a.chat_model || h("span", { class: "muted" }, "none")),
     h("td", {}, a.has_key ? `…${a.api_key_last4}` : h("span", { class: "muted" }, "no key")),
     h("td", { class: "actions" }, testCell(a), " ", h("button", { class: "secondary small", type: "button", onclick: () => editAccount(acc, a) }, "Edit"), " ",
-      h("button", { class: "danger small", type: "button", onclick: async () => { if (!confirm(`Delete "${a.name}"?`)) return; try { await api(`/api/accounts/${a.id}`, { method: "DELETE" }); renderAccounts(); } catch (e) { toast(e.message, true); } } }, "Delete"))))];
+      h("button", { class: "danger small", type: "button", onclick: async () => { if (!(await confirmDialog(`Delete "${a.name}"?`, { title: "Delete account", confirmLabel: "Delete", danger: true }))) return; try { await api(`/api/accounts/${a.id}`, { method: "DELETE" }); renderAccounts(); } catch (e) { toast(e.message, true); } } }, "Delete"))))];
   fill($("acc-table"), list.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map((t) => h("th", {}, t)))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."));
 }
 
@@ -106,7 +106,7 @@ async function renderSecurity() {
     fill(table, list.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Token", "Access", "Created", "Last used", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, list.map((t) => h("tr", {}, h("td", { class: "title" }, t.name), h("td", {}, h("code", {}, `${t.prefix}…`)), h("td", {}, t.scope), h("td", {}, fmtDate(t.created_at)), h("td", {}, fmtDate(t.last_used_at)),
         h("td", { class: "actions" }, t.revoked_at ? h("span", { class: "muted" }, "revoked") : h("button", { class: "danger small", type: "button", onclick: async () => {
-          if (!confirm(`Revoke "${t.name}"? Clients using it stop working immediately.`)) return;
+          if (!(await confirmDialog(`Revoke "${t.name}"? Clients using it stop working immediately.`, { title: "Revoke token", confirmLabel: "Revoke", danger: true }))) return;
           try { await api(`/api/tokens/${t.id}`, { method: "DELETE" }); toast("Token revoked"); renderTable(); } catch (err) { toast(err.message, true); }
         } }, "Revoke"))))))) : h("p", { class: "hint" }, "No tokens yet."));
   }

@@ -22,7 +22,7 @@ export class El {
   constructor(tag) {
     this.tag = tag; this.nodeType = 1; this.children = []; this.parent = null; this.attrs = {}; this.dataset = {};
     this._value = ""; this.checked = false; this.disabled = false; this.hidden = false; this.open = false; this.className = "";
-    this.listeners = {}; this.files = []; this.classList = { toggle() {}, add() {}, remove() {} }; this.style = {};
+    this.listeners = {}; this.files = []; this.classes = new Set(); this.classList = { toggle() {}, add: (c) => this.classes.add(c), remove: (c) => this.classes.delete(c), contains: (c) => this.classes.has(c) }; this.style = {};
   }
   get id() { return this.attrs.id || ""; }
   set id(v) { this.attrs.id = String(v); }
@@ -36,6 +36,7 @@ export class El {
       if (this.tag === "select" && k.tag === "option" && (this.children.length === 1 || k.selected)) this._value = k._value;   // a select shows its selected (else first) option
     }
   }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }   // confirmDialog removes its overlay
   replaceChildren(...kids) { for (const c of this.children) c.parent = null; this.children = []; this.append(...kids); }
   setAttribute(k, v) {
     this.attrs[k] = String(v);
@@ -71,8 +72,32 @@ globalThis.document = {
 globalThis.window = { dispatchEvent() {}, addEventListener() {} };
 globalThis.CustomEvent = class {};
 globalThis.location = { origin: "http://x", hash: "", search: "", pathname: "/" };
-globalThis.confirm = () => true;
-globalThis.prompt = () => "customer disputes the charge";
+// No window.confirm/alert/prompt here on purpose: the pages use the kit's confirmDialog/promptDialog (an overlay under <body>), and a
+// native call would throw. Tests answer the dialog with `dialogs.answer(...)`, or leave `dialogs.auto` on so one is accepted as it opens.
+
+/** The kit's confirm/prompt modal: every dialog that opened is recorded; with `auto` on (default) each is accepted, or cancelled when
+ *  `auto = "cancel"`, as soon as it mounts (typing the phrase when one is required). Handlers that `await` a dialog only continue then. */
+export const dialogs = { seen: [], auto: "ok", overlay: () => document.body.children.find((c) => c.className === "confirm-overlay") || null };
+dialogs.button = (label) => dialogs.overlay()?._all().find((e) => e.tag === "button" && e.textContent === label) || null;
+dialogs.answer = async (ok, { value } = {}) => {
+  const o = dialogs.overlay();
+  if (!o) throw new Error("no dialog is open");
+  const input = o._all().find((e) => e.tag === "input" || e.tag === "textarea");
+  if (ok && input && value !== undefined) { input.value = value; await fire(input, "input"); }
+  const btns = o._all().filter((e) => e.tag === "button");
+  await fire(ok ? btns[1] : btns[0], "click");   // cancel is first, confirm second
+};
+setInterval(async () => {
+  const o = dialogs.overlay();
+  if (!o || o._seen) return;
+  o._seen = true;
+  const text = (id) => o._all().find((e) => e.attrs.id?.startsWith(id))?.textContent;
+  const input = o._all().find((e) => e.tag === "input" || e.tag === "textarea");
+  const phrase = input?.attrs["aria-label"]?.startsWith("Type ") ? input.attrs["aria-label"].slice(5, -" to confirm".length) : null;
+  dialogs.seen.push({ title: text("confirm-title"), message: text("confirm-msg"), danger: o._all().some((e) => e.className === "danger-solid"), phrase, value: phrase ? null : input?.value ?? null });
+  if (dialogs.auto === "ok") await dialogs.answer(true, phrase ? { value: phrase } : {}).catch(() => {});
+  else if (dialogs.auto === "cancel") await dialogs.answer(false);
+}, 1);   // keeps the loop alive while a handler waits on a dialog; done() exits
 
 /** The static page shell: the elements index.html provides. */
 export function shell(ids) {
