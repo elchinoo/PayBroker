@@ -18,6 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-throwaway  # pragma: allowlist secret
+          POSTGRES_DB: paybroker_test  # UTF8 by default in this image
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d paybroker_test"
+          --health-interval 3s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://ci:ci-throwaway@127.0.0.1:5432/paybroker_test  # pragma: allowlist secret
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,11 +40,27 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"  # keep in step with the Dockerfile base image
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install "agentpg-kit @ https://github.com/elchinoo/agentpg-kit/archive/refs/tags/v0.2.2.tar.gz"
       - run: pip install -e ".[dev]"
+      - name: Check database is ready and extensions are available
+        env:
+          PGPASSWORD: ci-throwaway  # pragma: allowlist secret
+        run: |
+          pg_isready -h 127.0.0.1 -U ci -d paybroker_test
+          psql -h 127.0.0.1 -U ci -d paybroker_test -v ON_ERROR_STOP=1 \
+            -c "SHOW server_encoding" \
+            -c "CREATE EXTENSION IF NOT EXISTS vector" \
+            -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
       - run: ruff check src tests
       - run: pytest -q
+      - name: pip-audit (non-blocking)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit
 
   build-and-push:
     needs: test
