@@ -42,7 +42,7 @@ TABLES = tuple(t for t, _ in STEPS)
 
 KEPT = (
     "merchant", "merchant_key", "card", "psp_connector", "fraud_rule", "blacklist", "llm_account", "model_version",
-    "app_setting", "web_session", "oidc_login", "api_token", "admin_audit", "schema_migrations",
+    "app_setting", "web_session", "oidc_login", "api_token", "admin_audit", "triage_llm_call", "schema_migrations",
 )
 
 

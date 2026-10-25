@@ -8,7 +8,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import accounts, auth, cases, demo, insights, maintenance, merchants, rules, suggest, vault
+from . import (
+    accounts,
+    auth,
+    cases,
+    demo,
+    insights,
+    maintenance,
+    merchants,
+    rules,
+    suggest,
+    triage_limits,
+    vault,
+)
 from .chat import chat as run_chat
 from .db import connect
 from .llm_http import LLMError
@@ -17,6 +29,14 @@ from .netguard import UnsafeURL
 
 class _B(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class TriageLimitsBody(_B):
+    """Bounds live in triage_limits.BOUNDS; they are repeated here so the API documents them and answers 422 before touching the database."""
+    rpm: int | None = Field(None, ge=0, le=600)
+    daily_cap: int | None = Field(None, ge=0, le=1_000_000)
+    group_minutes: int | None = Field(None, ge=0, le=1440)
+    pause_minutes: int | None = Field(None, ge=1, le=1440)
 
 
 class ResolveBody(_B):
@@ -424,6 +444,22 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
                 accounts.set_triage_account(conn, body.account_id)
             return {"triage_account": body.account_id}
         return _account_call(run)
+
+    # ---- AI triage limits -------------------------------------------------------------------------------------------
+    @r.get("/admin/triage/settings", dependencies=[settings])
+    def get_triage_limits():
+        with connect() as conn:
+            out = triage_limits.settings(conn)
+            conn.rollback()
+        return out
+
+    @r.put("/admin/triage/settings")
+    def put_triage_limits(body: TriageLimitsBody, p=settings):
+        try:
+            with connect() as conn:
+                return triage_limits.update_settings(conn, actor=p.actor, **body.model_dump())
+        except triage_limits.LimitsError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     # ---- demo traffic ----------------------------------------------------------------------------------------------
     @r.post("/demo/traffic", dependencies=[settings])

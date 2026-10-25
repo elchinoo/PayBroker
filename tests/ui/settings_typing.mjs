@@ -20,6 +20,8 @@ route({
   "GET /api/admin/training/stats": { settings: { capture: false, retention_days: 180, max_rows: 5000000, capture_source: "default" }, rows: 0, labeled: 0, fraud: 0,
     fraud_rate: null, label_sources: {}, per_model_version: [] },
   "POST /api/admin/training/purge": { expired: 0, over_cap: 0 },
+  "GET /api/admin/triage/settings": { rpm: 20, daily_cap: 500, group_minutes: 30, pause_minutes: 10, sources: { rpm: "default", daily_cap: "default", group_minutes: "default", pause_minutes: "default" },
+    usage: { calls_24h: 0, queued: 0, circuit: { open: false, paused_until: null, consecutive_429: 0 } } },
   "GET /api/tokens": [],
   "GET /api/session": { has_admin_password: false },
   "GET /api/admin/data/reset": { phrase: "RESET PAYBROKER DATA", counts: {}, recent: [] },

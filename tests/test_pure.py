@@ -18,6 +18,7 @@ from paybroker import (
     suggest,
     training_data,
     triage,
+    triage_limits,
     webhooks,
 )
 
@@ -398,3 +399,110 @@ def test_llm_environment_contract_matches_trustdesk(monkeypatch, tmp_path):
     assert get_settings().llm_api_key == "env-key"
     env = accounts.env_account()
     assert env["id"] == "env" and env["has_key"] and "env-key" not in str(env) and "file-key" not in str(env)
+
+
+# ---- Tier 3 throttle: bucket, cap, grouping, backoff (clock and lookups injected; nothing sleeps) ------------------
+class Clock:
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_bucket_paces_calls_refills_with_time_and_zero_means_unlimited():
+    clock = Clock()
+    b = triage_limits.Bucket(clock)
+    assert all(b.take(0) == 0.0 for _ in range(100))                           # unlimited
+    taken = [b.take(20) for _ in range(triage_limits.BURST + 1)]
+    assert taken[:triage_limits.BURST] == [0.0] * triage_limits.BURST and taken[-1] == pytest.approx(3.0)   # 20/min is one slot per 3 s
+    clock.now += 3.0
+    assert b.take(20) == 0.0 and b.take(20) > 0                                # exactly one slot came back
+    clock.now += 600                                                           # idle: the bucket fills to its burst, never beyond
+    assert sum(b.take(20) == 0.0 for _ in range(20)) == triage_limits.BURST
+
+
+def test_bucket_follows_a_changed_setting_at_once():
+    clock = Clock()
+    b = triage_limits.Bucket(clock)
+    assert sum(b.take(60) == 0.0 for _ in range(10)) == triage_limits.BURST
+    assert b.take(1) > 0 and b.take(1) == pytest.approx(60.0, abs=1)           # lowered: the new rate applies, no leftover credit
+    assert b.take(600) == 0.0                                                  # raised: a full bucket
+
+
+LIMITS = triage_limits.Limits(rpm=20, daily_cap=500, group_minutes=30, pause_minutes=10)
+
+
+def verdict(limits=LIMITS, *, now=1000.0, paused_until=0.0, job_age=0.0, used=0, grouped=None, wait=0.0):
+    calls = []
+    v = triage_limits.decide(limits, now=now, paused_until=paused_until, job_age=job_age,
+                             used_24h=lambda: calls.append("used") or used, grouped=lambda: calls.append("group") or grouped,
+                             take=lambda: calls.append("take") or wait, rand=lambda: 0.0)
+    return v, calls
+
+
+def test_decision_goes_to_the_model_when_nothing_stands_in_the_way():
+    v, calls = verdict()
+    assert (v.action, v.outcome) == ("llm", "llm") and calls == ["used", "group", "take"]
+
+
+def test_daily_cap_gives_the_heuristic_at_once_and_zero_disables_it():
+    v, calls = verdict(used=500)
+    assert (v.action, v.outcome) == ("heuristic", "capped") and "daily cap reached" in v.note and calls == ["used"]
+    assert verdict(used=499)[0].action == "llm"
+    off, calls = verdict(triage_limits.Limits(20, 0, 30, 10), used=10**9)
+    assert off.action == "llm" and "used" not in calls                          # no cap: the count is not even queried
+
+
+def test_grouping_uses_the_heuristic_and_names_the_other_payment_and_zero_is_off():
+    v, calls = verdict(grouped=("pay_abc", "device"))
+    assert (v.action, v.outcome) == ("heuristic", "grouped") and "pay_abc" in v.note and "device" in v.note and "30 minutes" in v.note
+    assert "take" not in calls                                                  # a grouped case never spends a rate-limit slot
+    off, calls = verdict(triage_limits.Limits(20, 500, 0, 10), grouped=("pay_abc", "device"))
+    assert off.action == "llm" and "group" not in calls
+
+
+def test_no_free_slot_defers_with_a_short_jittered_delay():
+    v, _ = verdict(wait=3.0)
+    assert (v.action, v.outcome, v.delay) == ("defer", "throttled", triage_limits.THROTTLE_MIN_DELAY)    # 3 s wait is raised to the minimum
+    assert verdict(wait=40.0)[0].delay == 40.0
+    jittered = triage_limits.decide(LIMITS, now=0, paused_until=0, job_age=0, used_24h=lambda: 0, grouped=lambda: None,
+                                    take=lambda: 1.0, rand=lambda: 1.0)
+    assert jittered.delay == triage_limits.THROTTLE_MIN_DELAY + triage_limits.THROTTLE_JITTER
+
+
+def test_open_breaker_keeps_new_cases_queued_but_gives_an_old_backlog_the_heuristic():
+    v, calls = verdict(now=1000.0, paused_until=1600.0, job_age=60)
+    assert (v.action, v.outcome, v.delay) == ("defer", "paused", 600.0) and calls == []
+    stale, _ = verdict(now=1000.0, paused_until=1600.0, job_age=triage_limits.STALE_BACKLOG + 1)
+    assert (stale.action, stale.outcome) == ("heuristic", "paused_fallback") and "paused" in stale.note
+    assert verdict(now=1600.0, paused_until=1600.0)[0].action == "llm"          # the pause is over
+
+
+def test_gateway_status_and_retry_after_are_read_from_the_error_text():
+    assert triage_limits.http_status("chat endpoint returned HTTP 429: slow down") == 429
+    assert triage_limits.http_status("chat endpoint returned HTTP 502: bad gateway") == 502
+    assert triage_limits.http_status("the model did not return a JSON object") is None
+    assert triage_limits.http_status("") is None
+    for text, secs in (("HTTP 429: {'retry_after': 12}", 12.0), ("HTTP 429: Retry-After: 30", 30.0), ("HTTP 429: rate limited, retry after 7 seconds", 7.0),
+                       ("HTTP 429: try again in 45s", 45.0), ("HTTP 429: Retry-After: 999999", float(triage_limits.RETRY_AFTER_MAX))):
+        assert triage_limits.retry_after(text) == secs, text
+    assert triage_limits.retry_after("HTTP 429: monthly token budget exhausted") is None
+
+
+def test_backoff_honours_the_gateway_else_doubles_from_a_minute_up_to_fifteen():
+    assert [triage_limits.backoff_seconds(n) for n in range(1, 7)] == [60, 120, 240, 480, 900, 900]
+    assert triage_limits.backoff_seconds(5, asked=12.0) == 12.0
+    assert triage_limits.backoff_seconds(10**6) == 900.0
+
+
+def test_settings_come_from_the_store_then_the_environment_then_the_default_and_bad_values_fall_back(monkeypatch):
+    for var in triage_limits.ENV.values():
+        monkeypatch.delenv(var, raising=False)
+    assert {f: triage_limits._stored({}, f) for f in triage_limits.KEYS} == triage_limits.DEFAULTS
+    monkeypatch.setenv("PAYBROKER_TRIAGE_RPM", "7")
+    monkeypatch.setenv("PAYBROKER_TRIAGE_DAILY_CAP", "oops")
+    monkeypatch.setenv("PAYBROKER_TRIAGE_PAUSE_MINUTES", "0")                   # below the bound: the default
+    assert triage_limits._stored({}, "rpm") == 7 and triage_limits._stored({}, "daily_cap") == 500 and triage_limits._stored({}, "pause_minutes") == 10
+    assert triage_limits._stored({"triage_rpm": "0"}, "rpm") == 0               # a stored 0 (unlimited) wins over the environment
+    assert triage_limits._stored({"triage_rpm": "9999"}, "rpm") == 7            # a stored value out of bounds is ignored

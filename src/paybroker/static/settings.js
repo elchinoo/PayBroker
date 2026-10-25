@@ -3,11 +3,13 @@ import { fmtDate, $, copy, field, fill, h, toast } from "/kit/ui.js";
 import { can } from "/kit/session.js";
 import { renderMaintenance } from "/static/maintenance.js";
 import { renderModel } from "/static/model.js";
+import { renderTriageLimits } from "/static/triage.js";
 
 export async function initSettings() {
   const box = $("view-settings");
-  fill(box, h("h1", {}, "Settings"), h("div", { id: "set-accounts" }), h("div", { id: "set-model", class: "settings-block" }), h("div", { id: "set-security", class: "settings-block" }), h("div", { id: "set-demo", class: "settings-block" }), can("data:reset") ? h("div", { id: "set-maintenance", class: "settings-block" }) : null);
+  fill(box, h("h1", {}, "Settings"), h("div", { id: "set-accounts" }), can("settings:manage") ? h("div", { id: "set-triage", class: "settings-block" }) : null, h("div", { id: "set-model", class: "settings-block" }), h("div", { id: "set-security", class: "settings-block" }), h("div", { id: "set-demo", class: "settings-block" }), can("data:reset") ? h("div", { id: "set-maintenance", class: "settings-block" }) : null);
   renderAccounts();
+  if (can("settings:manage")) renderTriageLimits($("set-triage"));
   renderModel($("set-model"));
   renderSecurity();
   renderDemo();

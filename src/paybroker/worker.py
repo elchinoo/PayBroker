@@ -6,9 +6,10 @@ synthesis. Connector statistics are flushed to the database on the same loop.
 """
 import threading
 import time
+from datetime import UTC, datetime
 
 from . import metrics as m
-from . import psp, suggest, training_data, triage, webhooks
+from . import psp, suggest, training_data, triage, triage_limits, webhooks
 from . import settings_store as store
 from .db import connect
 from .llm_http import LLMError
@@ -24,9 +25,15 @@ def claim(conn, limit: int = 20) -> list[dict]:
     rows = conn.execute(
         "UPDATE outbox SET attempts = attempts + 1, available_at = now() + %s * interval '1 second' WHERE id IN ("
         "SELECT id FROM outbox WHERE done_at IS NULL AND available_at <= now() ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, topic, payload, attempts", (LEASE_SECONDS, limit)).fetchall()
+        "RETURNING id, topic, payload, attempts, created_at", (LEASE_SECONDS, limit)).fetchall()
     conn.commit()
     return rows
+
+
+def _age(job: dict) -> float:
+    """Seconds since the job was queued (0 when unknown)."""
+    created = job.get("created_at")
+    return max(0.0, (datetime.now(UTC) - created).total_seconds()) if created else 0.0
 
 
 def _finish(conn, job: dict, error: str | None = None, retry_in: float | None = None, free_attempt: bool = False) -> None:
@@ -52,8 +59,14 @@ def handle(conn, job: dict) -> str:
         return outcome
     if topic == "fraud.triage":
         try:
-            outcome = triage.run(conn, payload["transaction_id"])
+            outcome = triage.run(conn, payload["transaction_id"], _age(job))
+        except triage.Deferred as wait:
+            _finish(conn, job, wait.reason, retry_in=wait.delay, free_attempt=True)     # throttled or paused: not a failed attempt
+            return "deferred"
         except LLMError as exc:
+            if triage_limits.http_status(str(exc)) == 429:      # the gateway's rate limit or token budget, not a fault of this job
+                _finish(conn, job, str(exc), retry_in=triage_limits.on_rate_limited(conn, str(exc)), free_attempt=True)
+                return "rate_limited"
             if attempts >= MAX_ATTEMPTS[topic]:
                 triage.give_up(conn, payload["transaction_id"], str(exc))
                 _finish(conn, job, str(exc))
@@ -119,6 +132,7 @@ def loop(stop: threading.Event, interval: float = 1.0) -> None:
                     maybe_schedule_rule_synthesis(conn)
                     last_sched = time.monotonic()
                 if time.monotonic() - last_purge > PURGE_EVERY:
+                    triage_limits.purge(conn)
                     training_data.purge(conn)       # retention and the row cap hold even while capture is switched off
                     last_purge = time.monotonic()
         except Exception:  # noqa: BLE001 - the database may be asleep; try again

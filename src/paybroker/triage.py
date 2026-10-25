@@ -10,7 +10,7 @@ import re
 
 from psycopg.types.json import Jsonb
 
-from . import accounts, metrics, vault
+from . import accounts, metrics, triage_limits, vault
 from .chat import chat
 from .llm_http import LLMError
 
@@ -116,30 +116,61 @@ def parse(text: str) -> dict:
             "suggested_rule_updates": str(d.get("suggested_rule_updates") or "")[:500]}
 
 
-def run(conn, transaction_id: str) -> str:
-    """Triage one flagged transaction. Returns llm | heuristic | locked. Raises on LLM failure so the worker retries."""
+class Deferred(Exception):
+    """Not now: the throttle has no slot, or the breaker is open. The worker reschedules the job without using an attempt."""
+
+    def __init__(self, delay: float, reason: str):
+        super().__init__(reason)
+        self.delay, self.reason = delay, reason
+
+
+def run(conn, transaction_id: str, job_age: float = 0.0) -> str:
+    """Triage one flagged transaction. Returns llm | heuristic | locked. Raises LLMError on LLM failure so the worker retries, and
+    Deferred when the throttle says wait. `job_age` is how long the job has been queued (see triage_limits.decide)."""
     tx = conn.execute("SELECT * FROM transaction WHERE id=%s", (transaction_id,)).fetchone()
     fa = conn.execute("SELECT * FROM fraud_assessment WHERE transaction_id=%s", (transaction_id,)).fetchone()
     if not tx or not fa:
         return "heuristic"
-    merchant = conn.execute("SELECT name FROM merchant WHERE id=%s", (tx["merchant_id"],)).fetchone()
-    payload = build_payload(conn, tx, fa, merchant["name"] if merchant else "")
     account = accounts.triage_account(conn)
     source, result, extra = "heuristic", None, {}
+    if account is not None:
+        verdict = triage_limits.gate(conn, tx, job_age)      # before the payload: a deferred job costs one cheap lookup
+        conn.commit()
+        if verdict.outcome != "llm":
+            metrics.TRIAGE_CALLS.labels(verdict.outcome).inc()
+        if verdict.action == "defer":
+            raise Deferred(verdict.delay, verdict.note)
+        if verdict.action == "heuristic":
+            extra = {"note": verdict.note}
+            account = None
+    merchant = conn.execute("SELECT name FROM merchant WHERE id=%s", (tx["merchant_id"],)).fetchone()
+    payload = build_payload(conn, tx, fa, merchant["name"] if merchant else "")
     if account is not None:
         cfg = accounts.chat_config_for(conn, account)
         conn.commit()
         try:
+            # retries=0: the client's own retry loop would send a rate-limited request up to four times, each one counting against
+            # the gateway's per-minute limit. The worker owns the retry (and the backoff).
             reply = chat(cfg, [{"role": "system", "content": SYSTEM},
                                {"role": "user", "content": "Analyze this flagged transaction.\n<payload>\n"
-                                + json.dumps(payload, default=str).replace("</payload>", "") + "\n</payload>"}], max_tokens=600)
+                                + json.dumps(payload, default=str).replace("</payload>", "") + "\n</payload>"}], max_tokens=600, retries=0)
             result, source = parse(reply["text"]), "llm"
             extra = {"model": cfg.model, "account": cfg.label, "usage": reply.get("usage")}
+            triage_limits.record_call(conn, transaction_id, "ok")
+            triage_limits.on_success(conn)
+            metrics.TRIAGE_CALLS.labels("ok").inc()
         except vault.VaultLocked:
             return "locked"
-        except (LLMError, TriageError) as exc:
+        except TriageError as exc:       # the model answered, so the call counts against the cap
+            triage_limits.record_call(conn, transaction_id, "error")
+            conn.commit()
             metrics.TRIAGE.labels("llm", "error").inc()
+            metrics.TRIAGE_CALLS.labels("error").inc()
             raise LLMError(str(exc)) from exc
+        except LLMError as exc:
+            metrics.TRIAGE.labels("llm", "error").inc()
+            metrics.TRIAGE_CALLS.labels("gateway_429" if triage_limits.http_status(str(exc)) == 429 else "error").inc()
+            raise
     if result is None:
         result = heuristic(payload)
     result = {**result, "source": source, **extra}

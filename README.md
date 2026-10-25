@@ -314,6 +314,42 @@ Every account has a **Test chat** button. It sends a tiny request (`max_tokens=6
 ("thinking") model that uses its whole budget before answering is reported as such, with its `finish_reason` and token count, rather than as
 an empty answer; raise the model's token limit or pick a model without a thinking phase.
 
+### Limits on AI triage (protecting the gateway's rate limit and token budget)
+
+The gateway allows **60 requests a minute** and a **hard monthly token budget** per app (about 1,260 tokens per triage call). A
+card-testing flood can flag thousands of payments an hour, so PayBroker never sends every flagged payment to the model. Four limits keep
+it far inside both; whatever is not sent gets the built-in rule-based triage, with a `note` on the case saying why, and the case is
+complete. All four are changed at run time under **Settings > AI triage limits** (or `PUT /api/admin/triage/settings`, which writes an
+`admin_audit` row); the environment variable is only the default until a value is saved.
+
+| Setting | Variable | Default | What it does |
+|---|---|---|---|
+| `rpm` | `PAYBROKER_TRIAGE_RPM` | 20 | Token bucket: model calls per minute (burst of up to 5). `0` = unlimited. With no free slot the job waits 5 to 35 s and is retried; that costs no attempt. |
+| `daily_cap` | `PAYBROKER_TRIAGE_DAILY_CAP` | 500 | Calls that reached the model in the last 24 hours. At the cap, new cases get the heuristic at once (`note`: "AI triage daily cap reached"). `0` = unlimited. |
+| `group_minutes` | `PAYBROKER_TRIAGE_GROUP_MINUTES` | 30 | A case whose device (else, with no device, IP) was already read by the model that recently is not sent again: it gets the heuristic, with the other payment's reference in the `note`. `0` = off. |
+| `pause_minutes` | `PAYBROKER_TRIAGE_PAUSE_MINUTES` | 10 | Circuit breaker, see below. 1 to 1,440. |
+
+Sizing: 20 a minute is a third of the gateway's 60, leaving room for the rule-suggestion job and a second worker. Set `daily_cap` from
+the monthly token budget: budget / 30 / about 1,260 tokens per call. For a 5,000,000-token month that is about 130 calls a day, so the
+default of 500 (about 630,000 tokens a day, 19 million a month if reached every day) is only safe where the budget is several times
+larger; lower it to match yours, and keep in mind that other apps may share the same key.
+
+- **Per process.** The bucket lives in each worker process, so with N workers the effective rate is N times `rpm`. The daily cap, the
+  grouping and the breaker are shared through the database and hold across all workers.
+- **The gateway says no.** An HTTP 429 (rate limit or exhausted budget) is not a failure of the case: it uses no attempt and the case is not
+  marked failed. The job waits for the gateway's `Retry-After` when the error text carries one, else 60 s doubling to 15 min. After **3
+  consecutive 429s** the breaker opens: LLM triage pauses for `pause_minutes`. During a pause new cases stay queued; a case that has been
+  queued for more than an hour gets the heuristic instead of waiting longer. Any successful call resets the count. Other errors keep the
+  old behaviour (3 attempts, then the heuristic, state `failed`).
+- **One request per attempt.** The triage client no longer retries inside a call (the shared client would resend a 429 up to three more
+  times, each counting against the gateway's minute); the worker owns every retry.
+- **Seeing it.** The Settings card shows calls in the last 24 hours against the cap, queued triage jobs and the breaker. Prometheus has
+  `payment_broker_triage_calls_total{outcome}` (`ok`, `error`, `gateway_429`, `throttled`, `capped`, `grouped`, `paused`,
+  `paused_fallback`) and the gauges `payment_broker_triage_queue_depth`, `payment_broker_triage_llm_calls_24h` and
+  `payment_broker_triage_circuit_open`.
+- Each model call is logged in `triage_llm_call` (payment row id, time, outcome; no identifiers) for seven days. A data reset keeps it, so
+  a reset cannot hand back the day's budget.
+
 ## Roles and single sign-on
 
 Standalone, the first-run admin has everything. Federated with the identity provider (`PAYBROKER_OIDC_ISSUER`, client id
@@ -343,6 +379,7 @@ of credential: they can reach only the payment API, never an operator route, and
 | `PAYBROKER_ALLOW_PRIVATE_URLS` | Allow AI provider and webhook URLs on private networks (local testing only). |
 | `PAYBROKER_CAPTURE_TRAINING_DATA` | `1` captures training data when no stored setting says otherwise (default off). |
 | `PAYBROKER_TRAINING_RETENTION_DAYS`, `PAYBROKER_TRAINING_MAX_ROWS` | Defaults for the retention (180 days) and row cap (5,000,000) until set in Settings > Model. |
+| `PAYBROKER_TRIAGE_RPM`, `PAYBROKER_TRIAGE_DAILY_CAP`, `PAYBROKER_TRIAGE_GROUP_MINUTES`, `PAYBROKER_TRIAGE_PAUSE_MINUTES` | Defaults for the AI triage limits (20 a minute, 500 a day, 30 minutes, 10 minutes) until set in Settings > AI triage limits, see [Limits on AI triage](#limits-on-ai-triage-protecting-the-gateways-rate-limit-and-token-budget). |
 | `PAYBROKER_POOL_MAX` | Size of the connection pool used by the payment path (default 20). |
 | `PAYBROKER_SIM_LATENCY` | `off` makes the simulated connectors answer instantly (tests and benchmarks). |
 | `PAYBROKER_OIDC_*`, `PAYBROKER_LOCAL_LOGIN` | Single sign-on, see above. |
