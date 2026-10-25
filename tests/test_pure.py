@@ -503,6 +503,6 @@ def test_settings_come_from_the_store_then_the_environment_then_the_default_and_
     monkeypatch.setenv("PAYBROKER_TRIAGE_RPM", "7")
     monkeypatch.setenv("PAYBROKER_TRIAGE_DAILY_CAP", "oops")
     monkeypatch.setenv("PAYBROKER_TRIAGE_PAUSE_MINUTES", "0")                   # below the bound: the default
-    assert triage_limits._stored({}, "rpm") == 7 and triage_limits._stored({}, "daily_cap") == 500 and triage_limits._stored({}, "pause_minutes") == 10
+    assert triage_limits._stored({}, "rpm") == 7 and triage_limits._stored({}, "daily_cap") == triage_limits.DEFAULTS["daily_cap"] and triage_limits._stored({}, "pause_minutes") == 10
     assert triage_limits._stored({"triage_rpm": "0"}, "rpm") == 0               # a stored 0 (unlimited) wins over the environment
     assert triage_limits._stored({"triage_rpm": "9999"}, "rpm") == 7            # a stored value out of bounds is ignored
