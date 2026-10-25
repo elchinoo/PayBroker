@@ -106,6 +106,80 @@ Anything else is refused (HTTP 422): the vault is for test cards only.
 broker assumes an established account (30 days), because "I have never seen this customer" is not the same as "this is a new
 account" and treating it so would put every first payment into 3-D Secure.
 
+## Using PayBroker from a web shop
+
+The card number goes from the customer's browser straight to PayBroker, so it never touches the shop's server. The shop's server
+only ever sees a token. Everything here is test mode (see the test cards above).
+
+**1. Set the merchant up** (Merchants in the web UI, or the operator API):
+
+- *Browser origins*: the shop's exact origin, e.g. `https://shop.example.com` (`http://localhost:3000` is allowed for local
+  development). No wildcards, no paths. Only the publishable-key tokenization call answers browsers on those origins; the
+  secret-key endpoints never send CORS headers.
+- *Webhook*: a URL on the shop's server. Save it and keep the signing secret (`whsec_...`); it also signs the 3-D Secure return.
+- A **publishable** key (`pk_test_...`) for the page and a **secret** key (`sk_test_...`) for the server.
+
+**2. In the browser**, with the publishable key:
+
+```js
+const res = await fetch("https://paybroker.example.com/v1/vault/tokens", {
+  method: "POST",
+  headers: { "Authorization": "Bearer pk_test_...", "Content-Type": "application/json" },
+  body: JSON.stringify({ number: "4242424242424242", exp_month: 12, exp_year: 2035, cvc: "123" }),
+});
+const out = await res.json();
+if (!res.ok) throw new Error(out.error?.message ?? "tokenization failed");   // 403 origin_not_allowed: the origin is not listed
+const token = out.token;   // send only this to your server; the browser keeps no credentials (no cookies are involved)
+```
+
+**3. On the shop's server**, with the secret key (never in the page):
+
+```bash
+curl -s -X POST https://paybroker.example.com/v1/payments/authorize -H "Authorization: Bearer sk_test_..." -H "Content-Type: application/json" -d '{
+  "idempotency_key": "order-1001", "amount": 4999, "currency": "USD",
+  "payment_method": {"type": "card", "card_token": "tok_vault_card_..."},
+  "customer": {"id": "cus_42", "email": "pat@example.com", "ip_address": "198.51.100.20"},
+  "return_url": "https://shop.example.com/checkout/return?order=1001"}'
+```
+
+`AUTHORIZED` or `CAPTURED` means done. `REQUIRES_ACTION` carries `action_required.redirect_url`: redirect the customer's browser
+there. (`return_url` is optional, must be on one of the merchant's allowed origins and needs the webhook secret to exist.)
+
+**4. The 3-D Secure return.** After the challenge the hosted page redirects to your `return_url` with `payment_id`, `status`,
+`timestamp` and `signature` appended. Check it before trusting it (Node):
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+function verifyReturn(url, webhookSecret) {
+  const q = new URL(url).searchParams;
+  const signed = `${q.get("timestamp")}.payment_id=${q.get("payment_id")}&status=${q.get("status")}`;
+  const want = createHmac("sha256", webhookSecret).update(signed).digest("hex");
+  const got = q.get("signature") ?? "";
+  const fresh = Math.abs(Date.now() / 1000 - Number(q.get("timestamp"))) < 300;
+  return fresh && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
+}
+```
+
+The return only tells the customer's browser where to go; the webhook (or `GET /v1/payments/{id}`) is the source of truth.
+
+**5. Verify every webhook.** PayBroker POSTs JSON with `X-Timestamp` (unix seconds) and `X-Signature` = hex
+HMAC-SHA256(secret, `timestamp + "." + raw body`). Use the **raw** body bytes, compare in constant time, reject timestamps older
+than five minutes, and deduplicate on the event `id` (delivery is at least once):
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+// Express: app.post("/paybroker/webhooks", express.raw({ type: "application/json" }), handler)
+function verifyWebhook(rawBody, headers, secret) {
+  const ts = headers["x-timestamp"];
+  const want = createHmac("sha256", secret).update(`${ts}.${rawBody.toString("utf8")}`).digest("hex");
+  const got = String(headers["x-signature"] ?? "");
+  const fresh = Math.abs(Date.now() / 1000 - Number(ts)) < 300;
+  return fresh && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
+}
+```
+
+The exact rules (CORS, preflight, error codes, the return URL) are in [API.md](API.md).
+
 ## How a decision is made
 
 1. **One database transaction** inserts the payment (the unique `(merchant, idempotency_key)` index makes a concurrent retry
@@ -405,6 +479,7 @@ Postgres only, which is all this needs.
 - The geo lookup is a tiny table over documentation IP ranges; pass `telemetry.ip_country` from your edge in real use.
 - Per-process, in-memory caches (merchant settings 5 s, API keys 30 s, rules and connectors 5 s): a change reaches other
   processes within seconds, and immediately in the process that made it.
+- Browser access has no per-origin request rate limit of its own (only the 64 KB body cap and the failed-credential limiter); put a rate limit at the proxy.
 - One currency per payment, no settlement, payouts, disputes workflow or reconciliation.
 
 ## Development

@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import cards, features, fraud, ml, routing, rules, training_data
+from . import cards, features, fraud, ml, origins, routing, rules, training_data, webhooks
 from . import metrics as m
 from .ids import new_id
 
@@ -104,8 +104,23 @@ def emit(conn, merchant: dict, event_type: str, payload: dict) -> None:
 
 
 # ---- the authorization pipeline -------------------------------------------------------------------------------
+def check_return_url(merchant: dict, body: dict) -> None:
+    """A return_url (where the hosted 3-D Secure page sends the customer back) must be on one of the merchant's allowed origins, and
+    the merchant needs a webhook secret: the redirect is signed with it, so the shop can tell it from a link the customer typed."""
+    url = body.get("return_url")
+    if not url:
+        return
+    if not merchant.get("has_webhook_secret"):
+        raise PaymentError(422, "RETURN_URL_NEEDS_WEBHOOK", "return_url needs a webhook configured: the redirect is signed with its secret")
+    try:
+        origins.clean_return_url(url, merchant.get("allowed_origins") or [])
+    except origins.OriginError as exc:
+        raise PaymentError(422, "RETURN_URL_NOT_ALLOWED", str(exc)) from exc
+
+
 def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: str) -> tuple[int, dict]:
     """Run one authorization. `body` is the validated request; returns (http_status, response_body)."""
+    check_return_url(merchant, body)
     t_start = time.perf_counter()
     rhash = request_hash(body)
     payment_id = new_id("pay_", 10)
@@ -183,8 +198,8 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
     elif decision == "CHALLENGE":
         status, action = "REQUIRES_ACTION", "REQUIRE_3DS2"
         challenge = {"id": new_id("ch_", 16)}
-        conn.execute("INSERT INTO three_ds_challenge (id, transaction_id, expires_at) VALUES (%s,%s,%s)",
-                     (challenge["id"], tx_id, datetime.now(UTC) + timedelta(minutes=30)))
+        conn.execute("INSERT INTO three_ds_challenge (id, transaction_id, expires_at, return_url) VALUES (%s,%s,%s,%s)",
+                     (challenge["id"], tx_id, datetime.now(UTC) + timedelta(minutes=30), body.get("return_url")))
         result = "C"
     else:
         status, result, t_psp, attempts = _route_and_authorize(conn, tx_id, merchant, card, body, capture, tx_fields)
@@ -270,7 +285,7 @@ def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict
         conn.commit()
         raise PaymentError(410, "CHALLENGE_EXPIRED", "the challenge expired; the payment was declined")
     tx = conn.execute("SELECT * FROM transaction WHERE id=%s FOR UPDATE", (ch["transaction_id"],)).fetchone()
-    merchant = conn.execute("SELECT id, name, status, webhook_url, settings FROM merchant WHERE id=%s", (tx["merchant_id"],)).fetchone()
+    merchant = conn.execute("SELECT id, name, status, webhook_url, webhook_secret_enc, settings FROM merchant WHERE id=%s", (tx["merchant_id"],)).fetchone()
     fa = conn.execute("SELECT * FROM fraud_assessment WHERE transaction_id=%s", (tx["id"],)).fetchone()
     fields: dict = {}
     if outcome != "succeeded":
@@ -296,6 +311,10 @@ def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict
         emit(conn, merchant, event, out)
     conn.commit()
     m.PAYMENTS.labels(status.lower(), tx["psp_selected"] or "none").inc()
+    if ch["return_url"] and merchant["webhook_secret_enc"]:   # the page redirects the customer here; unsigned redirects are never made
+        link = webhooks.signed_return_url(merchant["webhook_secret_enc"], ch["return_url"], out["payment_id"], out["status"])
+        if link:
+            out["return_url"] = link
     return out
 
 

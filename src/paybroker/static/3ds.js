@@ -11,6 +11,11 @@ async function main() {
   const done = async (outcome) => {
     try {
       const r = await api(`/api/3ds/${encodeURIComponent(id)}/complete`, { method: "POST", json: { outcome } });
+      if (r.return_url) {   // the shop asked to get the customer back; the server signed the link (see API.md)
+        fill(box, h("h1", {}, "Returning to the merchant"), h("p", { class: "muted" }, "One moment…"), h("p", {}, h("a", { href: r.return_url }, "Continue")));
+        location.assign(r.return_url);
+        return;
+      }
       fill(box, h("h1", {}, outcome === "succeeded" ? "Verified" : "Not verified"), h("p", {}, `Payment ${r.payment_id}: ${r.status}.`), h("p", { class: "muted" }, "You can close this page. The merchant receives the result by webhook."));
     } catch (err) { fill(box, h("h1", {}, "Could not complete"), h("p", { class: "error" }, err.message)); }
   };

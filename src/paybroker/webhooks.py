@@ -8,6 +8,7 @@ five minutes. Delivery retries with back-off for a day; the merchant sees every 
 """
 import json
 import time
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -24,6 +25,22 @@ def _client() -> httpx.Client:    # indirection so tests can inject a transport
 
 def sign(secret: str, timestamp: str, raw: str) -> str:
     return hmac_hex(secret, f"{timestamp}.{raw}")
+
+
+def signed_return_url(secret_enc: str, url: str, payment_id: str, status: str, now: float | None = None) -> str | None:
+    """Where the hosted 3-D Secure page sends the customer: the merchant's return_url plus
+    payment_id, status, timestamp and signature = HMAC-SHA256(webhook secret, timestamp + "." + "payment_id=<id>&status=<STATUS>"), hex,
+    the webhook scheme over that query string. None when the secret cannot be read (vault locked): no unsigned redirect is ever made."""
+    try:
+        secret = vault.decrypt(secret_enc)
+    except (vault.VaultLocked, vault.VaultError):
+        return None
+    ts = str(int(time.time() if now is None else now))
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query += [("payment_id", payment_id), ("status", status), ("timestamp", ts),
+              ("signature", sign(secret, ts, urlencode([("payment_id", payment_id), ("status", status)])))]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
 def deliver(conn, event_id: str) -> tuple[str, str]:

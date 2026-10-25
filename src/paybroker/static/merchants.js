@@ -77,6 +77,20 @@ async function openMerchant(id) {
   manage ? h("button", { class: "primary", type: "submit" }, "Save settings") : null, serr);
   if (!manage) for (const el of settingsForm.querySelectorAll("input,select")) el.disabled = true;
 
+  // browser origins (CORS for the publishable key, and where 3-D Secure may send the customer back)
+  const origins = h("textarea", { id: "ms-origins", rows: "4", maxlength: "2000", placeholder: "https://shop.example.com\nhttp://localhost:3000", spellcheck: "false", "aria-label": "Allowed browser origins" });
+  origins.value = (m.allowed_origins || []).join("\n");
+  const oerr = h("p", { class: "error", role: "alert" });
+  const originsForm = h("form", { class: "card", onsubmit: async (e) => {
+    e.preventDefault();
+    oerr.textContent = "";
+    const allowed_origins = origins.value.split(/[\s,]+/).filter(Boolean);
+    try { const r = await api(`/api/merchants/${id}`, { method: "PATCH", json: { allowed_origins } }); origins.value = r.allowed_origins.join("\n"); toast("Allowed origins saved"); } catch (ex) { oerr.textContent = ex.message; }
+  } }, h("h3", {}, "Browser origins"),
+  h("p", { class: "muted" }, "Websites that may call POST /v1/vault/tokens from a customer's browser with a publishable key, one per line: https://host[:port] (http only for localhost). No wildcards, no paths. Only the publishable-key tokenization call accepts browsers; a payment's 3-D Secure return_url must also be on one of these origins."),
+  field("Allowed origins", origins), manage ? h("button", { class: "primary", type: "submit" }, "Save origins") : null, oerr);
+  if (!manage) origins.disabled = true;
+
   // keys
   const kname = h("input", { id: "key-name", maxlength: "60", placeholder: "e.g. checkout server" });
   const kkind = h("select", { id: "key-kind" }, h("option", { value: "secret" }, "Secret key (server)"), h("option", { value: "publishable" }, "Publishable key (browser)"));
@@ -119,7 +133,7 @@ async function openMerchant(id) {
   paintKeys();
   fill($("detail-body"),
     head,
-    keys, settingsForm, whForm,
+    keys, originsForm, settingsForm, whForm,
     events.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Recent event", "Type", "Status", "Attempts", "Last HTTP", "When"].map((t) => h("th", {}, t)))),
       h("tbody", {}, events.items.map((w) => h("tr", {}, h("td", {}, h("code", {}, w.event_id)), h("td", {}, w.type), h("td", {}, w.status), h("td", {}, w.attempts), h("td", {}, w.last_code ?? ""), h("td", {}, fmtDateTime(w.created_at))))))) : null);
 }

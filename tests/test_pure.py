@@ -7,11 +7,13 @@ import pytest
 from paybroker import (
     cards,
     core,
+    cors,
     features,
     fraud,
     merchants,
     ml,
     modelstore,
+    origins,
     routing,
     rules,
     scenarios,
@@ -506,3 +508,148 @@ def test_settings_come_from_the_store_then_the_environment_then_the_default_and_
     assert triage_limits._stored({}, "rpm") == 7 and triage_limits._stored({}, "daily_cap") == triage_limits.DEFAULTS["daily_cap"] and triage_limits._stored({}, "pause_minutes") == 10
     assert triage_limits._stored({"triage_rpm": "0"}, "rpm") == 0               # a stored 0 (unlimited) wins over the environment
     assert triage_limits._stored({"triage_rpm": "9999"}, "rpm") == 7            # a stored value out of bounds is ignored
+
+
+# ---- browser origins, CORS and the 3-D Secure return --------------------------------------------------------------
+@pytest.mark.parametrize("raw,clean", [
+    ("https://shop.example.com", "https://shop.example.com"), ("HTTPS://Shop.Example.COM", "https://shop.example.com"),
+    ("https://shop.example.com:443", "https://shop.example.com"), ("https://shop.example.com:8443", "https://shop.example.com:8443"),
+    ("http://localhost", "http://localhost"), ("http://localhost:3000", "http://localhost:3000"), ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+    ("https://localhost:3000", "https://localhost:3000"), ("  https://a.example.org  ", "https://a.example.org")])
+def test_origins_are_normalized(raw, clean):
+    assert origins.clean_origin(raw) == clean
+
+
+@pytest.mark.parametrize("raw", [
+    "*", "https://*.example.com", "https://shop.example.com/", "https://shop.example.com/path", "https://shop.example.com?x=1",
+    "https://shop.example.com#f", "http://shop.example.com", "http://192.168.0.1", "https://203.0.113.9", "ftp://shop.example.com",
+    "shop.example.com", "//shop.example.com", "https://user:pw@shop.example.com", "https://shop.example.com:99999", "https://shop.example.com:0",
+    "https://shop example.com", "https://exa_mple.com", "https://-bad.example.com", "https://intranet", "https://shop.exämple.com", "", "   ",
+    "https://" + "a" * 250 + ".com", "null", None, 5, "https://shop.example.com\x00"])
+def test_bad_origins_are_refused(raw):
+    with pytest.raises(origins.OriginError):
+        origins.clean_origin(raw)
+
+
+def test_origin_lists_are_deduplicated_and_bounded():
+    assert origins.clean_origins(["https://a.example.com", "HTTPS://A.EXAMPLE.COM:443", "http://localhost:3000"]) == ["https://a.example.com", "http://localhost:3000"]
+    assert origins.clean_origins([]) == []
+    with pytest.raises(origins.OriginError):
+        origins.clean_origins("https://a.example.com")
+    with pytest.raises(origins.OriginError):
+        origins.clean_origins([f"https://s{i}.example.com" for i in range(origins.MAX_ORIGINS + 1)])
+    with pytest.raises(merchants.MerchantError, match="wildcards"):
+        merchants.clean_origins(["https://*.example.com"])
+
+
+def test_return_urls_must_sit_on_an_allowed_origin():
+    allowed = ["https://shop.example.com", "http://localhost:3000"]
+    ok = "https://shop.example.com/checkout/return?order=17"
+    assert origins.clean_return_url(ok, allowed) == ok
+    assert origins.clean_return_url("http://localhost:3000/back", allowed)
+    for bad in ["https://evil.example.com/x", "http://shop.example.com/x", "https://shop.example.com:444/x", "https://shop.example.com/x#frag",
+                "https://u:p@shop.example.com/x", "/relative", "javascript:alert(1)", "https://shop.example.com/x?status=ok",
+                "https://shop.example.com/x?a=1&signature=z", "https://shop.example.com/a b", "x" * 501, "", None]:
+        with pytest.raises(origins.OriginError):
+            origins.clean_return_url(bad, allowed)
+
+
+def test_the_cors_origin_lookup_is_cached_briefly():
+    calls = []
+    look = cors.OriginLookup(lambda o: calls.append(o) or o.endswith(".ok"))
+    assert look("a.ok") and look("a.ok") and not look("b.no") and not look("b.no")
+    assert calls == ["a.ok", "b.no"]
+    look.clear()
+    assert look("a.ok") and calls == ["a.ok", "b.no", "a.ok"]
+
+
+def _asgi(app, method, path, headers):
+    import asyncio
+
+    out = {"start": None, "body": b""}
+
+    async def run():
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(m):
+            if m["type"] == "http.response.start":
+                out["start"] = m
+            else:
+                out["body"] += m.get("body", b"")
+
+        await app({"type": "http", "method": method, "path": path, "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+                   "state": {}}, receive, send)
+
+    asyncio.run(run())
+    return out["start"]["status"], {k.decode(): v.decode() for k, v in out["start"]["headers"]}, out["body"]
+
+
+def test_cors_middleware_preflight_and_response_headers():
+    verdict = {"origin": None}
+
+    async def inner(scope, receive, send):
+        if verdict["origin"]:
+            scope["state"][cors.STATE_KEY] = verdict["origin"]
+        await send({"type": "http.response.start", "status": 201, "headers": [(b"content-type", b"application/json"), (b"vary", b"Accept")]})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    app = cors.BrowserCors(inner, lambda o: o == "https://shop.example.com")
+    pre = {"origin": "https://shop.example.com", "access-control-request-method": "POST"}
+    status, h, _ = _asgi(app, "OPTIONS", "/v1/vault/tokens", pre)
+    assert status == 204 and h["access-control-allow-origin"] == "https://shop.example.com" and h["vary"] == "Origin"
+    assert h["access-control-allow-methods"] == "POST, OPTIONS" and h["access-control-max-age"] == "600"
+    assert h["access-control-allow-headers"] == "Authorization, Content-Type, Idempotency-Key" and "access-control-allow-credentials" not in h
+    for bad in ({**pre, "origin": "https://evil.example.com"}, {**pre, "access-control-request-method": "DELETE"}):
+        status, h, body = _asgi(app, "OPTIONS", "/v1/vault/tokens", bad)
+        assert status == 403 and not [k for k in h if k.startswith("access-control") or k == "vary"] and b"origin_not_allowed" in body
+    for path in ("/v1/payments/authorize", "/v1/payments/pay_1/capture", "/v1/payments/pay_1/refund", "/api/merchants"):    # never CORS
+        status, h, _ = _asgi(app, "OPTIONS", path, pre)
+        assert status == 201 and not [k for k in h if k.startswith("access-control")]
+        status, h, _ = _asgi(app, "POST", path, {"origin": "https://shop.example.com"})
+        assert not [k for k in h if k.startswith("access-control")]
+    status, h, _ = _asgi(app, "POST", "/v1/vault/tokens", {"origin": "https://shop.example.com"})        # the route did not approve the origin
+    assert status == 201 and not [k for k in h if k.startswith("access-control")] and h["vary"] == "Accept"
+    verdict["origin"] = "https://shop.example.com"
+    status, h, _ = _asgi(app, "POST", "/v1/vault/tokens", {"origin": "https://shop.example.com"})
+    assert h["access-control-allow-origin"] == "https://shop.example.com" and h["vary"] == "Accept, Origin"
+    assert "access-control-allow-credentials" not in h and "access-control-allow-methods" not in h
+    status, h, _ = _asgi(app, "POST", "/v1/vault/tokens", {"origin": "https://other.example.com"})       # approval is for one exact origin
+    assert not [k for k in h if k.startswith("access-control")]
+    status, h, _ = _asgi(app, "POST", "/v1/vault/tokens", {})                                            # no Origin: untouched
+    assert status == 201 and not [k for k in h if k.startswith("access-control")]
+
+
+def test_a_failing_origin_lookup_answers_the_preflight_without_headers():
+    def boom(_):
+        raise RuntimeError("database asleep")
+
+    status, h, _ = _asgi(cors.BrowserCors(None, boom), "OPTIONS", "/v1/vault/tokens",
+                         {"origin": "https://shop.example.com", "access-control-request-method": "POST"})
+    assert status == 403 and not [k for k in h if k.startswith("access-control")]
+
+
+def test_the_signed_return_url_uses_the_webhook_scheme(monkeypatch):
+    import hashlib
+    import hmac
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr("paybroker.webhooks.vault.decrypt", lambda enc: "whsec_test")
+    url = webhooks.signed_return_url("enc", "https://shop.example.com/return?order=17", "pay_abc", "AUTHORIZED", now=1_767_225_600)
+    q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+    assert url.startswith("https://shop.example.com/return?order=17&payment_id=pay_abc&status=AUTHORIZED&timestamp=1767225600&signature=")
+    assert q["order"] == "17" and not urlsplit(url).fragment
+    expect = hmac.new(b"whsec_test", b"1767225600.payment_id=pay_abc&status=AUTHORIZED", hashlib.sha256).hexdigest()
+    assert q["signature"] == expect and webhooks.sign("whsec_test", "1767225600", "payment_id=pay_abc&status=AUTHORIZED") == expect
+
+    def locked(_):
+        raise webhooks.vault.VaultLocked("locked")
+
+    monkeypatch.setattr("paybroker.webhooks.vault.decrypt", locked)
+    assert webhooks.signed_return_url("enc", "https://shop.example.com/r", "pay_abc", "AUTHORIZED") is None   # never an unsigned redirect

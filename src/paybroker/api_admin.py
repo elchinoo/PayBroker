@@ -16,6 +16,7 @@ from . import (
     insights,
     maintenance,
     merchants,
+    origins,
     rules,
     suggest,
     triage_limits,
@@ -74,12 +75,14 @@ class BlacklistBody(_B):
 class MerchantBody(_B):
     name: str = Field(min_length=1, max_length=100)
     settings: dict | None = None
+    allowed_origins: list[str] | None = Field(None, max_length=origins.MAX_ORIGINS, description="exact browser origins, e.g. https://shop.example.com")
 
 
 class MerchantPatch(_B):
     name: str | None = Field(None, max_length=100)
     status: str | None = Field(None, pattern="^(active|suspended)$")
     settings: dict | None = None
+    allowed_origins: list[str] | None = Field(None, max_length=origins.MAX_ORIGINS, description="replaces the whole list; [] removes browser access")
 
 
 class WebhookBody(_B):
@@ -297,11 +300,11 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             conn.rollback()
         return {"items": out, "defaults": merchants.DEFAULTS}
 
-    @r.post("/merchants", status_code=201, dependencies=[merch])
-    def create_merchant(body: MerchantBody):
+    @r.post("/merchants", status_code=201)
+    def create_merchant(body: MerchantBody, p=merch):
         def run():
             with connect() as conn:
-                return merchants.create(conn, body.name, body.settings)
+                return merchants.create(conn, body.name, body.settings, body.allowed_origins, actor=p.actor)
         return _merchant_call(run)
 
     @r.get("/merchants/{merchant_id}", dependencies=[read])
@@ -314,11 +317,12 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
                 return out
         return _merchant_call(run)
 
-    @r.patch("/merchants/{merchant_id}", dependencies=[merch])
-    def patch_merchant(merchant_id: str, body: MerchantPatch):
+    @r.patch("/merchants/{merchant_id}")
+    def patch_merchant(merchant_id: str, body: MerchantPatch, p=merch):
         def run():
             with connect() as conn:
-                out = merchants.update(conn, merchant_id, name=body.name, status=body.status, settings=body.settings)
+                out = merchants.update(conn, merchant_id, name=body.name, status=body.status, settings=body.settings,
+                                       allowed_origins=body.allowed_origins, actor=p.actor)
             forget_merchants()
             return out
         return _merchant_call(run)

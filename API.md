@@ -12,7 +12,7 @@ are refused (413). Send `Authorization: Bearer <key>`.
 | Key | Prefix | Can |
 |---|---|---|
 | Secret | `sk_test_` | everything below (server side only) |
-| Publishable | `pk_test_` | only `POST /v1/vault/tokens` (safe in a browser) |
+| Publishable | `pk_test_` | only `POST /v1/vault/tokens` (safe in a browser, from the merchant's allowed origins: see *Browser access*) |
 
 ### `POST /v1/vault/tokens` → 201
 ```json
@@ -21,6 +21,26 @@ are refused (413). Send `Authorization: Bearer <key>`.
 Returns `{token, brand, bin, last4, exp_month, exp_year, fingerprint}`. Only the public processor test cards and numbers
 starting `999999` are accepted (16-digit numbers starting `99999901` always decline, `99999902` always need 3-D Secure,
 `99999903` fail on the first connector and recover; see the README table); anything else is `422 INVALID_CARD`. The number and CVC are checked and discarded.
+
+### Browser access (CORS) for `POST /v1/vault/tokens`
+A shop's page on another origin can call this one endpoint from the customer's browser, so card numbers never reach the shop's server.
+Nothing else in `/v1` (authorize, capture, void, refund, the reads) or anywhere else on the server ever gets CORS headers.
+
+* Each merchant lists its **allowed origins** under Merchants (or `PATCH /api/merchants/{id}` `{"allowed_origins": [...]}`, which
+  replaces the list; `[]` turns browser access off). An origin is exactly `https://host[:port]`, or `http://localhost[:port]` and
+  `http://127.0.0.1[:port]` for local development. No wildcards, no paths, no credentials, no IP addresses, at most 20; they are
+  normalized (lower case, default port dropped) and anything else is `422`. Every change writes an `admin_audit` row
+  (`merchant.allowed_origins`: merchant, old and new list).
+* **Preflight** (`OPTIONS /v1/vault/tokens`, no credential is sent): answered `204` with `Access-Control-Allow-Origin` (the request's
+  own origin, never `*`), `Access-Control-Allow-Methods: POST, OPTIONS`, `Access-Control-Allow-Headers: Authorization, Content-Type,
+  Idempotency-Key`, `Access-Control-Max-Age: 600` and `Vary: Origin` when **any active merchant** lists the origin and the requested
+  method is `POST`; otherwise `403 origin_not_allowed` with no CORS headers.
+* **The call itself**: when the request has an `Origin`, the key's **own merchant** must list it and the key must be publishable;
+  otherwise `403 {"error": {"code": "origin_not_allowed"}}` with no CORS headers (a secret key from a browser is refused on purpose).
+  The response then carries `Access-Control-Allow-Origin: <that origin>` and `Vary: Origin`, errors included, so the page can read
+  them. `Access-Control-Allow-Credentials` is never sent: the key travels in `Authorization`, not in cookies. A call without an
+  `Origin` (your server, curl) is unaffected.
+* The usual limits apply: 64 KB bodies, and the failed-credential limiter (429). There is no per-origin request rate limit yet.
 
 ### `POST /v1/payments/authorize`
 ```json
@@ -37,16 +57,17 @@ starting `999999` are accepted (16-digit numbers starting `99999901` always decl
 `idempotency_key` (8 to 128 characters) is required. **A retry with the same key and the same body returns the first result;
 the same key with a different body is `422 IDEMPOTENCY_KEY_REUSED`.** Concurrent retries create one payment.
 `capture_method` is `manual` (authorize now, capture later) or `automatic`; the merchant's default applies when omitted.
+`return_url` (optional, up to 500 characters) is where the hosted 3-D Secure page sends the customer afterwards: see *3-D Secure*.
 `account_age_hours` is how old the customer's account is at your site; when absent an established account is assumed.
 
 | Status | Body | Meaning |
 |---|---|---|
 | 200 | the payment (`status` `AUTHORIZED` or `CAPTURED`) | approved |
-| 200 | `status: REQUIRES_ACTION` and `action_required: {type: "3DS_CHALLENGE", redirect_url}` | send the customer to `redirect_url`; the result arrives by webhook |
+| 200 | `status: REQUIRES_ACTION` and `action_required: {type: "3DS_CHALLENGE", redirect_url}` | send the customer to `redirect_url`; the result arrives by webhook (and by the signed return, if you passed `return_url`) |
 | 402 | `error.code: CARD_DECLINED`, `decline_code` | the issuer declined (final, not retried on another connector) |
 | 403 | `error.code: FRAUD_REJECTED`, `fraud_assessment` | declined by the fraud engine; the connector was never called |
 | 403 | `error.code: MERCHANT_MISMATCH` | `merchant_id` in the body is not this key's merchant |
-| 422 | `IDEMPOTENCY_KEY_REUSED`, `CURRENCY_NOT_ALLOWED`, `INVALID_CARD_TOKEN`, `NO_ROUTE`, validation errors | fix the request |
+| 422 | `IDEMPOTENCY_KEY_REUSED`, `CURRENCY_NOT_ALLOWED`, `INVALID_CARD_TOKEN`, `NO_ROUTE`, `RETURN_URL_NOT_ALLOWED`, `RETURN_URL_NEEDS_WEBHOOK`, validation errors | fix the request |
 | 429 | | too many failed credentials from this address |
 | 502 | `PSP_UNAVAILABLE` | every eligible connector failed within the budget |
 | 503 | | the database is unavailable (it may be waking up); retry |
@@ -73,9 +94,32 @@ Wrong state is `409 INVALID_STATE`; a bad amount `422 INVALID_AMOUNT`.
 Statuses: `PROCESSING`, `REQUIRES_ACTION`, `AUTHORIZED`, `CAPTURED`, `PARTIALLY_REFUNDED`, `REFUNDED`, `VOIDED`, `DECLINED`, `FAILED`.
 
 ### 3-D Secure (simulated issuer)
-`GET /3ds/{challenge_id}` is the hosted page. `GET /api/3ds/{id}` and `POST /api/3ds/{id}/complete {"outcome": "succeeded"|"failed"}`
+`GET /3ds/{challenge_id}` is the hosted page. `GET /api/3ds/{id}` and `POST /api/3ds/{id}/complete {"outcome": "succeeded"}|{"outcome": "failed"}`
 are what it calls. **Test mode only**: anyone holding the unguessable challenge id can complete it, because a real issuer's
 result would come from the card network instead. A challenge lasts 30 minutes.
+
+**How a shop sends the customer there and back.**
+1. Authorize with `return_url`, a URL on one of the merchant's allowed origins (`https`, or `http://localhost`; no credentials, no
+   fragment, and none of the query parameters `payment_id`, `status`, `timestamp`, `signature`, which the page adds). It is refused
+   with `422 RETURN_URL_NOT_ALLOWED` otherwise, and with `422 RETURN_URL_NEEDS_WEBHOOK` when the merchant has no webhook (the
+   redirect is signed with the webhook secret). Without `return_url` nothing changes: the page shows the result and the shop
+   learns it by webhook.
+2. If the answer is `REQUIRES_ACTION`, redirect the customer's browser to `action_required.redirect_url`.
+3. After the customer completes the challenge, the page redirects to your `return_url` with four query parameters appended:
+   `payment_id`, `status` (`AUTHORIZED`, `CAPTURED`, `DECLINED` or `FAILED`), `timestamp` (unix seconds) and `signature`.
+4. **Verify before trusting it**: `signature = hex(HMAC-SHA256(webhook secret, timestamp + "." + "payment_id=<id>&status=<STATUS>"))`,
+   the webhook scheme over that fixed string. Compare in constant time, reject a timestamp older than five minutes, and treat the
+   webhook (or `GET /v1/payments/{id}` with your secret key) as the source of truth. If the secret cannot be read at that moment
+   (the vault is locked) the page does not redirect at all.
+
+### Using PayBroker from a web shop
+The five steps, with the exact calls (the full walkthrough, with code, is in the README):
+1. Under Merchants: list the shop's origin (`https://shop.example.com`), set a webhook URL (keep the signing secret), create a
+   publishable key for the page and a secret key for the server.
+2. In the browser, tokenize with the publishable key: `fetch("https://<broker>/v1/vault/tokens", {method: "POST", headers: {"Authorization": "Bearer pk_test_...", "Content-Type": "application/json"}, body: JSON.stringify({number, exp_month, exp_year, cvc})})` gives `{token, ...}`. Send only the `token` to the shop's server.
+3. On the server, `POST /v1/payments/authorize` with the secret key, an `idempotency_key`, the token and, for 3-D Secure, `return_url`.
+4. On `REQUIRES_ACTION`, redirect the customer to `action_required.redirect_url`; verify the signed return as above.
+5. Verify every webhook (below), then capture or void.
 
 ### Webhooks
 Set a URL under Merchants (or `PUT /api/merchants/{id}/webhook`); the signing secret is shown once.
@@ -141,6 +185,9 @@ before keeps working. The run is safe to interrupt and to repeat (a second call 
 cannot overlap, and writes one `admin_audit` row (actor, `data.reset`, detail with the options and counts, time). Payments sent while it
 runs may survive it, so pause the senders first. Only the `admin` role and `full` tokens may call it; merchant keys, other roles and the
 `read` and `metrics` scopes get 403, no credential 401.
+
+`allowed_origins` (list of browser origins, see *Browser access*) is a field of the merchant itself, beside `name` and `status`, in
+`POST /api/merchants` and `PATCH /api/merchants/{id}`, and part of every merchant the operator API returns.
 
 Merchant settings (`PATCH /api/merchants/{id}` with `settings`): `preferred_psps`, `max_fee_bps`, `weights {auth, cost, latency}`,
 `require_3ds_over_cents`, `allowed_currencies`, `region` (data residency), `capture_method`.

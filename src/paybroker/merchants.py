@@ -3,7 +3,7 @@ import secrets
 
 from psycopg.types.json import Jsonb
 
-from . import auth, vault
+from . import auth, origins, vault
 from .ids import new_id
 from .netguard import UnsafeURL, check_url
 
@@ -57,20 +57,41 @@ def psp_names(conn) -> set[str]:
     return {r["name"] for r in conn.execute("SELECT name FROM psp_connector")}
 
 
-def create(conn, name: str, settings: dict | None = None) -> dict:
+def clean_origins(raw) -> list[str]:
+    try:
+        return origins.clean_origins(raw)
+    except origins.OriginError as exc:
+        raise MerchantError(str(exc)) from exc
+
+
+def origin_listed(conn, origin: str) -> bool:
+    """Does ANY active merchant list this origin? What a CORS preflight can ask: it carries no credential to tell the merchant."""
+    return conn.execute("SELECT 1 FROM merchant WHERE status='active' AND %s = ANY(allowed_origins) LIMIT 1", (origin,)).fetchone() is not None
+
+
+def _audit_origins(conn, actor: str, merchant_id: str, before: list[str], after: list[str]) -> None:
+    conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s)", (
+        actor, "merchant.allowed_origins", Jsonb({"merchant_id": merchant_id, "from": before, "to": after})))
+
+
+def create(conn, name: str, settings: dict | None = None, allowed_origins: list[str] | None = None,
+           actor: str = "system") -> dict:
     name = (name or "").strip()
     if not 1 <= len(name) <= 100:
         raise MerchantError("name must be 1 to 100 characters")
     s = clean_settings(settings or {}, psp_names(conn))
+    o = clean_origins(allowed_origins or [])
     mid = new_id("mch_test_", 8)
-    conn.execute("INSERT INTO merchant (id, name, settings) VALUES (%s,%s,%s)", (mid, name, Jsonb(s)))
+    conn.execute("INSERT INTO merchant (id, name, settings, allowed_origins) VALUES (%s,%s,%s,%s)", (mid, name, Jsonb(s), o))
+    if o:
+        _audit_origins(conn, actor, mid, [], o)
     conn.commit()
     return get(conn, mid)
 
 
 def get(conn, merchant_id: str) -> dict:
     row = conn.execute("SELECT id, name, status, webhook_url, (webhook_secret_enc IS NOT NULL) AS has_webhook_secret, "
-                       "settings, created_at FROM merchant WHERE id=%s", (merchant_id,)).fetchone()
+                       "settings, allowed_origins, created_at FROM merchant WHERE id=%s", (merchant_id,)).fetchone()
     if not row:
         raise NotFound("merchant not found")
     row["settings"] = DEFAULTS | row["settings"]
@@ -84,13 +105,18 @@ def listing(conn) -> list[dict]:
         "FROM merchant m ORDER BY m.created_at DESC").fetchall()
 
 
-def update(conn, merchant_id: str, *, name: str | None, status: str | None, settings: dict | None) -> dict:
+def update(conn, merchant_id: str, *, name: str | None, status: str | None, settings: dict | None,
+           allowed_origins: list[str] | None = None, actor: str = "system") -> dict:
+    """Update a merchant. A change of allowed origins leaves one admin_audit row (who, which merchant, from what to what)."""
     cur = get(conn, merchant_id)
     if status is not None and status not in {"active", "suspended"}:
         raise MerchantError("status must be active or suspended")
     s = clean_settings({**cur["settings"], **settings}, psp_names(conn)) if settings is not None else cur["settings"]
-    conn.execute("UPDATE merchant SET name=%s, status=%s, settings=%s WHERE id=%s",
-                 ((name or cur["name"]).strip()[:100], status or cur["status"], Jsonb(s), merchant_id))
+    o = clean_origins(allowed_origins) if allowed_origins is not None else cur["allowed_origins"]
+    conn.execute("UPDATE merchant SET name=%s, status=%s, settings=%s, allowed_origins=%s WHERE id=%s",
+                 ((name or cur["name"]).strip()[:100], status or cur["status"], Jsonb(s), o, merchant_id))
+    if o != cur["allowed_origins"]:
+        _audit_origins(conn, actor, merchant_id, cur["allowed_origins"], o)
     conn.commit()
     return get(conn, merchant_id)
 

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__, auth, cards, core, merchants, ml, payments, routing, rules, vault, worker
+from . import __version__, auth, cards, core, cors, merchants, ml, payments, routing, rules, vault, worker
 from . import metrics as m
 from .config import get_settings
 from .core import COOKIE, CSRF_HEADER, fed, local
@@ -172,6 +172,17 @@ class _Guard(SecurityGuard):
 
 app.add_middleware(_Guard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), body_prefixes=("/api/", "/v1/", "/3ds/"),
                    observe=core.metrics.observe)
+
+
+def _origin_listed(origin: str) -> bool:
+    with pool().connection() as conn:
+        ok = merchants.origin_listed(conn, origin)
+        conn.rollback()
+    return ok
+
+
+_origins = cors.OriginLookup(_origin_listed)
+app.add_middleware(cors.BrowserCors, lookup=_origins)   # outermost: answers a preflight before any other layer sees it
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 mount_kit_static(app)
@@ -255,6 +266,7 @@ class AuthorizeBody(_Body):
     telemetry: Telemetry = Telemetry()
     shipping_address: Shipping | None = None
     capture_method: str | None = Field(None, pattern="^(manual|automatic)$")
+    return_url: str | None = Field(None, max_length=500, description="where the hosted 3-D Secure page sends the customer back; on an allowed origin")
 
 
 class AmountBody(_Body):
@@ -280,6 +292,7 @@ def merchant_cached(conn, merchant_id: str) -> dict:
 
 def forget_merchants() -> None:
     _merchant_cache.clear()
+    _origins.clear()
     auth.forget_keys()
 
 
@@ -295,9 +308,34 @@ def _paying(fn):
         raise _db_unavailable() from exc
 
 
+@app.exception_handler(payments.PaymentError)
+def _payment_error(_: Request, exc: payments.PaymentError):
+    return JSONResponse(exc.body(), status_code=exc.status)
+
+
+def tokenize_auth(request: Request, p: Principal = Depends(merchant_auth("vault:tokenize"))) -> Principal:
+    """A browser (a request with an Origin) may tokenize only with a publishable key, and only from an origin the key's own merchant
+    lists. Passing records the origin for the CORS middleware, which then adds the headers; failing answers 403 without any. A caller
+    with no Origin header (a server, curl) is not a browser and is not affected."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return p
+    try:
+        with pool().connection() as conn:
+            listed = merchant_cached(conn, _mid(p))["allowed_origins"]
+    except (psycopg.OperationalError, RuntimeError) as exc:
+        raise _db_unavailable() from exc
+    if "publishable" not in p.scopes:
+        raise payments.PaymentError(403, "origin_not_allowed", "a secret key must never be used from a browser: use a publishable key")
+    if origin not in listed:
+        raise payments.PaymentError(403, "origin_not_allowed", "this origin is not in the merchant's allowed origins")
+    request.state.cors_origin = origin
+    return p
+
+
 @app.post("/v1/vault/tokens", status_code=201)
-def tokenize(body: CardBody, p: Principal = Depends(merchant_auth("vault:tokenize"))):
-    """Exchange a TEST card for a token. Meant to be called from the customer's browser with a publishable key."""
+def tokenize(body: CardBody, p: Principal = Depends(tokenize_auth)):
+    """Exchange a TEST card for a token. Meant to be called from the customer's browser with a publishable key (CORS: see cors.py)."""
     def run():
         with pool().connection() as conn:
             return cards.tokenize(conn, _mid(p), body.number, body.exp_month, body.exp_year, body.cvc)
