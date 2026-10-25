@@ -26,7 +26,7 @@ from . import settings_store as store
 KEYS = {"rpm": "triage_rpm", "daily_cap": "triage_daily_cap", "group_minutes": "triage_group_minutes", "pause_minutes": "triage_pause_minutes"}
 ENV = {"rpm": "PAYBROKER_TRIAGE_RPM", "daily_cap": "PAYBROKER_TRIAGE_DAILY_CAP", "group_minutes": "PAYBROKER_TRIAGE_GROUP_MINUTES",
        "pause_minutes": "PAYBROKER_TRIAGE_PAUSE_MINUTES"}
-DEFAULTS = {"rpm": 20, "daily_cap": 500, "group_minutes": 30, "pause_minutes": 10}
+DEFAULTS = {"rpm": 20, "daily_cap": 120, "group_minutes": 30, "pause_minutes": 10}
 BOUNDS = {"rpm": (0, 600), "daily_cap": (0, 1_000_000), "group_minutes": (0, 1440), "pause_minutes": (1, 1440)}
 KEY_STREAK, KEY_PAUSED_UNTIL = "triage_429_streak", "triage_paused_until"     # breaker state: shared by every worker, survives restarts
 

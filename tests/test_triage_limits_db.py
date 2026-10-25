@@ -280,7 +280,7 @@ CSRF = {"X-PayBroker-CSRF": "1"}
 
 def test_settings_default_then_environment_then_setting_with_usage(client, op, gw, monkeypatch):
     out = client.get(URL, headers=op).json()
-    assert {f: out[f] for f in triage_limits.KEYS} == {"rpm": 20, "daily_cap": 500, "group_minutes": 30, "pause_minutes": 10}
+    assert {f: out[f] for f in triage_limits.KEYS} == {"rpm": 20, "daily_cap": 120, "group_minutes": 30, "pause_minutes": 10}
     assert set(out["sources"].values()) == {"default"}
     assert out["usage"] == {"calls_24h": 0, "queued": 0, "circuit": {"open": False, "paused_until": None, "consecutive_429": 0}}
     monkeypatch.setenv("PAYBROKER_TRIAGE_RPM", "30")

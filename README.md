@@ -325,7 +325,7 @@ complete. All four are changed at run time under **Settings > AI triage limits**
 | Setting | Variable | Default | What it does |
 |---|---|---|---|
 | `rpm` | `PAYBROKER_TRIAGE_RPM` | 20 | Token bucket: model calls per minute (burst of up to 5). `0` = unlimited. With no free slot the job waits 5 to 35 s and is retried; that costs no attempt. |
-| `daily_cap` | `PAYBROKER_TRIAGE_DAILY_CAP` | 500 | Calls that reached the model in the last 24 hours. At the cap, new cases get the heuristic at once (`note`: "AI triage daily cap reached"). `0` = unlimited. |
+| `daily_cap` | `PAYBROKER_TRIAGE_DAILY_CAP` | 120 | Calls that reached the model in the last 24 hours. At the cap, new cases get the heuristic at once (`note`: "AI triage daily cap reached"). `0` = unlimited. |
 | `group_minutes` | `PAYBROKER_TRIAGE_GROUP_MINUTES` | 30 | A case whose device (else, with no device, IP) was already read by the model that recently is not sent again: it gets the heuristic, with the other payment's reference in the `note`. `0` = off. |
 | `pause_minutes` | `PAYBROKER_TRIAGE_PAUSE_MINUTES` | 10 | Circuit breaker, see below. 1 to 1,440. |
 
@@ -379,7 +379,7 @@ of credential: they can reach only the payment API, never an operator route, and
 | `PAYBROKER_ALLOW_PRIVATE_URLS` | Allow AI provider and webhook URLs on private networks (local testing only). |
 | `PAYBROKER_CAPTURE_TRAINING_DATA` | `1` captures training data when no stored setting says otherwise (default off). |
 | `PAYBROKER_TRAINING_RETENTION_DAYS`, `PAYBROKER_TRAINING_MAX_ROWS` | Defaults for the retention (180 days) and row cap (5,000,000) until set in Settings > Model. |
-| `PAYBROKER_TRIAGE_RPM`, `PAYBROKER_TRIAGE_DAILY_CAP`, `PAYBROKER_TRIAGE_GROUP_MINUTES`, `PAYBROKER_TRIAGE_PAUSE_MINUTES` | Defaults for the AI triage limits (20 a minute, 500 a day, 30 minutes, 10 minutes) until set in Settings > AI triage limits, see [Limits on AI triage](#limits-on-ai-triage-protecting-the-gateways-rate-limit-and-token-budget). |
+| `PAYBROKER_TRIAGE_RPM`, `PAYBROKER_TRIAGE_DAILY_CAP`, `PAYBROKER_TRIAGE_GROUP_MINUTES`, `PAYBROKER_TRIAGE_PAUSE_MINUTES` | Defaults for the AI triage limits (20 a minute, 120 a day, 30 minutes, 10 minutes) until set in Settings > AI triage limits, see [Limits on AI triage](#limits-on-ai-triage-protecting-the-gateways-rate-limit-and-token-budget). |
 | `PAYBROKER_POOL_MAX` | Size of the connection pool used by the payment path (default 20). |
 | `PAYBROKER_SIM_LATENCY` | `off` makes the simulated connectors answer instantly (tests and benchmarks). |
 | `PAYBROKER_OIDC_*`, `PAYBROKER_LOCAL_LOGIN` | Single sign-on, see above. |
