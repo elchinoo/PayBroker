@@ -1,7 +1,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { $, badge, fill, fmtDateTime, h, toast, confirmDialog, promptDialog } from "/kit/ui.js";
-import { ACTION, cents, DECISION, gauge, PAYMENT, pills } from "/static/common.js";
+import { ACTION, cents, flushCard, DECISION, gauge, PAYMENT, pills, headCell } from "/static/common.js";
 
 const PAGE = 25;
 let wired = false;
@@ -86,7 +86,7 @@ export async function openPayment(id, onChange) {
   if (d.three_ds) parts.push(h("div", { class: "card" }, h("h3", {}, "3-D Secure"), facts([["Challenge", d.three_ds.id], ["Status", d.three_ds.status], ["Expires", fmtDateTime(d.three_ds.expires_at)]]),
     d.three_ds.status === "pending" ? h("p", {}, h("a", { class: "button", href: `/3ds/${d.three_ds.id}`, target: "_blank", rel: "noopener" }, "Open the simulated issuer page")) : null));
   if (d.chargebacks.length) parts.push(h("div", { class: "card" }, h("h3", {}, "Chargebacks"), h("ul", {}, ...d.chargebacks.map((c) => h("li", {}, `${cents(c.amount, p.currency)}: ${c.reason || "no reason"} (${fmtDateTime(c.created_at)})`)))));
-  if (d.webhooks.length) parts.push(h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Webhook event", "Type", "Status", "Attempts", "Last HTTP"].map((t) => h("th", {}, t)))),
+  if (d.webhooks.length) parts.push(flushCard("Webhook events", h("table", {}, h("thead", {}, h("tr", {}, ...["Webhook event", "Type", "Status", "Attempts", "Last HTTP"].map(headCell))),
     h("tbody", {}, ...d.webhooks.map((w) => h("tr", {}, h("td", {}, h("code", {}, w.event_id)), h("td", {}, w.type), h("td", {}, w.status), h("td", {}, w.attempts), h("td", {}, w.last_code ?? "")))))));
   if (can("cases:review") && ["AUTHORIZED", "CAPTURED", "PARTIALLY_REFUNDED", "REFUNDED"].includes(p.status)) {
     parts.push(h("div", { class: "btns" }, h("button", { class: "secondary", type: "button", onclick: async () => {

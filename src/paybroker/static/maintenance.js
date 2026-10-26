@@ -3,6 +3,7 @@
 // regions, so a refresh never clears the confirmation phrase that is being typed.
 import { api } from "/kit/api.js";
 import { fill, fmtDateTime, h, toast } from "/kit/ui.js";
+import { flushCard, headCell } from "/static/common.js";
 
 const PHRASE = "RESET PAYBROKER DATA";   // the server's own copy (GET) wins; this is only the fallback
 const LABEL = {
@@ -28,7 +29,7 @@ export async function renderMaintenance(box) {
 
   const paint = (data) => {
     countsBox.textContent = `Right now: ${Object.entries(data.counts).filter(([t]) => LABEL[t]).map(([t, n]) => `${num(n)} ${LABEL[t]}`).join(", ")}.`;
-    fill(recentBox, data.recent.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["When", "Who", "Outcome", "Deleted"].map((t) => h("th", {}, t)))),
+    fill(recentBox, data.recent.length ? flushCard("Recent resets", h("table", {}, h("thead", {}, h("tr", {}, ...["When", "Who", "Outcome", "Deleted"].map(headCell))),
       h("tbody", {}, data.recent.map((r) => h("tr", {}, h("td", {}, fmtDateTime(r.at)), h("td", {}, r.actor), h("td", {}, outcome(r.detail)),
         h("td", { class: "wrap" }, deletedText(r.detail))))))) : h("p", { class: "hint" }, "No reset has been run yet."));
   };

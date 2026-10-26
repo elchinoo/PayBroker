@@ -37,7 +37,7 @@
       <select id="pay-decision" aria-label="Fraud decision"><option value="">Any decision</option><option>APPROVE</option><option>CHALLENGE</option><option>DECLINE</option></select>
       <select id="pay-score" aria-label="Minimum score"><option value="">Any score</option><option value="300">300 and above</option><option value="500">500 and above</option><option value="700">700 and above</option></select>
     </div>
-    <div class="card flush"><table>
+    <div class="card flush scroll" tabindex="0" role="region" aria-label="Payments"><table>
       <thead><tr><th>Payment</th><th>Merchant</th><th class="num">Amount</th><th>Status</th><th class="num">Fraud score</th><th>Connector</th><th class="col-added">When</th></tr></thead>
       <tbody id="pay-body"></tbody></table>
       <p id="pay-empty" class="empty" hidden>No payments match. Send some from the API, or generate demo traffic under Settings.</p></div>

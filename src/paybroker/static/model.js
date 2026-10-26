@@ -2,6 +2,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { fmtDate, $, field, fill, h, toast, confirmDialog } from "/kit/ui.js";
+import { flushCard, headCell } from "/static/common.js";
 
 const num = (n) => (n == null ? "" : Number(n).toLocaleString());
 const pct = (r) => (r == null ? "n/a" : `${(r * 100).toFixed(2)}%`);
@@ -45,7 +46,7 @@ function modelList(models, again) {
         h("button", { class: "danger small", type: "button", onclick: async () => { if (!(await confirmDialog(`Delete model ${m.version}? This cannot be undone.`, { title: "Delete model", confirmLabel: "Delete", danger: true }))) return; try { await api(`/api/admin/models/${m.id}`, { method: "DELETE" }); again(); } catch (e) { toast(e.message, true); } } }, "Delete")])));
   }
   return h("div", {}, h("h3", {}, "Models"),
-    h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Version", "Uploaded", "Trees", "Size", "State", ""].map((t) => h("th", {}, t)))), h("tbody", {}, rows))),
+    flushCard("Models", h("table", {}, h("thead", {}, h("tr", {}, ...["Version", "Uploaded", "Trees", "Size", "State", ""].map(headCell))), h("tbody", {}, rows))),
     h("p", { class: "hint" }, `Rolling back is activating an earlier version. Bundled model: ${summary(models.bundled.trained_on)}`));
 }
 
@@ -82,7 +83,7 @@ function paintStats(statsBox, hintBox, stats) {
   const byModel = stats.per_model_version.map((m) => h("tr", {}, h("td", { class: "title" }, m.model_version), h("td", {}, num(m.rows)), h("td", {}, num(m.labeled)), h("td", {}, pct(m.fraud_rate)), h("td", {}, m.avg_score)));
   hintBox.textContent = s.capture_source === "environment" ? "Capture is on because PAYBROKER_CAPTURE_TRAINING_DATA is set; saving here overrides it." : "";
   fill(statsBox, h("div", { class: "card" }, h("p", {}, `${num(stats.rows)} rows, ${num(stats.labeled)} labeled (${num(stats.fraud)} fraud, fraud rate ${pct(stats.fraud_rate)}). Label sources: ${Object.entries(stats.label_sources).map(([k, v]) => `${k} ${num(v)}`).join(", ") || "none yet"}.`),
-    stats.per_model_version.length ? h("table", {}, h("thead", {}, h("tr", {}, ...["Model version", "Rows", "Labeled", "Fraud rate", "Average score"].map((t) => h("th", {}, t)))), h("tbody", {}, byModel)) : null));
+    stats.per_model_version.length ? h("table", {}, h("thead", {}, h("tr", {}, ...["Model version", "Rows", "Labeled", "Fraud rate", "Average score"].map(headCell))), h("tbody", {}, byModel)) : null));
 }
 
 function trainingData(stats, statsBox, hintBox, again) {

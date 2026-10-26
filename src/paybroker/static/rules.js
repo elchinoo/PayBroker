@@ -1,6 +1,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { $, field, fill, fmtDate, h, toast, confirmDialog } from "/kit/ui.js";
+import { flushCard, headCell } from "/static/common.js";
 
 const EXAMPLE = `{"all": [
   {"field": "checkout_seconds", "op": "<", "value": 5},
@@ -26,7 +27,7 @@ export async function initRules() {
   const act = async (fn, after) => { try { await fn(); if (after) after(); await refresh(); } catch (e) { toast(e.message, true); } };
 
   function paint() {
-    fill(rulesBox, h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Rule", "Action", "Definition", "Created by", "State", ""].map((t) => h("th", {}, t)))), h("tbody", {}, rules.items.map((r) => h("tr", {},
+    fill(rulesBox, flushCard("Rules", h("table", {}, h("thead", {}, h("tr", {}, ...["Rule", "Action", "Definition", "Created by", "State", ""].map(headCell))), h("tbody", {}, rules.items.map((r) => h("tr", {},
       h("td", { class: "title" }, r.name, r.description ? h("div", { class: "muted small-text" }, r.description) : null),
       h("td", {}, h("span", { class: `badge ${r.action === "decline" ? "bad" : "warn"}` }, r.action)),
       h("td", { class: "wrap" }, h("code", {}, JSON.stringify(r.definition))),
@@ -42,7 +43,7 @@ export async function initRules() {
         h("button", { class: "secondary", type: "button", onclick: () => act(() => api(`/api/suggestions/${s.id}/decide`, { method: "POST", json: { approve: false } })) }, "Reject")) : null))
       : h("p", { class: "empty" }, "No suggestions waiting."));
 
-    fill(blackBox, black.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Kind", "Value", "Why", "Source", "Added", ""].map((t) => h("th", {}, t)))),
+    fill(blackBox, black.items.length ? flushCard("Blocklist", h("table", {}, h("thead", {}, h("tr", {}, ...["Kind", "Value", "Why", "Source", "Added", ""].map(headCell))),
       h("tbody", {}, black.items.map((b) => h("tr", {}, h("td", {}, b.kind), h("td", {}, h("code", {}, b.value)), h("td", { class: "wrap" }, b.reason), h("td", {}, b.source), h("td", {}, fmtDate(b.created_at)),
         h("td", { class: "actions" }, review ? h("button", { class: "danger small", type: "button", onclick: () => act(() => api(`/api/blacklist/${b.id}`, { method: "DELETE" })) }, "Unblock") : null))))))
       : h("p", { class: "empty" }, "Nothing is blocked."));

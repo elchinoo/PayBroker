@@ -21,7 +21,7 @@ async function load() {
   if (!items.length) { fill(box, h("p", { class: "empty" }, "Nothing here. Flagged payments appear as soon as a score reaches 700.")); return; }
   fill(box, items.map((c) => h("div", { class: `card case${c.status === "resolved" ? " resolved" : ""}` },
     h("div", { class: "row" },
-      h("h3", {}, h("button", { class: "linklike", type: "button", onclick: () => openPayment(c.payment_id, load) }, c.payment_id), `  ${cents(c.amount, c.currency)}`),
+      h("h2", {}, h("button", { class: "linklike", type: "button", onclick: () => openPayment(c.payment_id, load) }, c.payment_id), `  ${cents(c.amount, c.currency)}`),
       h("span", { class: "badge bad" }, `score ${c.fraud_score}`)),
     h("p", { class: "muted" }, `${fmtDateTime(c.created_at)} · merchant ${c.merchant_id} · ${(c.reasons || []).join(", ") || "no reasons recorded"}`),
     c.ai_summary ? h("div", { class: "ai-box" }, h("strong", {}, `${(c.ai_category || "").replaceAll("_", " ")}: `), c.ai_summary, " ",

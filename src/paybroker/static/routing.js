@@ -1,6 +1,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { $, fill, h, toast } from "/kit/ui.js";
+import { flushCard, headCell } from "/static/common.js";
 
 export async function initRouting() {
   const box = $("view-routing");
@@ -10,7 +11,7 @@ export async function initRouting() {
   fill(box,
     h("h1", {}, "Routing"),
     h("p", { class: "muted" }, "Each payment goes to the eligible connector with the highest score S = W_auth × authorization rate − W_cost × fee − W_latency × latency, using the live (smoothed) numbers below. If a connector times out or fails with a 5xx, the next best is tried within an 800 ms budget; an issuer decline is final. All connectors here are simulations."),
-    h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Connector", "Currencies", "Regions", "Fee", "Auth rate (live)", "Latency (live)", "Attempts", "On"].map((t) => h("th", {}, t)))),
+    flushCard("Connectors", h("table", {}, h("thead", {}, h("tr", {}, ...["Connector", "Currencies", "Regions", "Fee", "Auth rate (live)", "Latency (live)", "Attempts", "On"].map(headCell))),
       h("tbody", {}, list.map((c) => h("tr", {}, h("td", { class: "title" }, c.label, h("div", { class: "muted small-text" }, c.name)), h("td", { class: "wrap" }, c.currencies.join(" ")), h("td", {}, c.regions.join(" ")),
         h("td", {}, `${(c.fee_bps / 100).toFixed(2)}%${c.fixed_fee_cents ? ` + ${c.fixed_fee_cents}c` : ""}`), h("td", {}, `${(Number(c.auth_ewma) * 100).toFixed(1)}%`), h("td", {}, `${Number(c.latency_ewma).toFixed(0)} ms`),
         h("td", {}, `${c.successes}/${c.attempts}`),

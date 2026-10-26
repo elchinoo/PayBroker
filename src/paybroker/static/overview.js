@@ -1,7 +1,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { $, badge, fill, h, toast } from "/kit/ui.js";
-import { band, cents, PAYMENT } from "/static/common.js";
+import { band, cents, flushCard, PAYMENT } from "/static/common.js";
 
 let days = 7;
 const NS = "http://www.w3.org/2000/svg";
@@ -72,7 +72,7 @@ export async function initOverview() {
         stat(String(o.outbox_backlog), "events queued")),
     ];
     if (!o.payments) {
-      parts.push(h("div", { class: "card" }, h("h3", {}, "No payments yet"),
+      parts.push(h("div", { class: "card" }, h("h2", {}, "No payments yet"),
         h("p", { class: "muted" }, "Create a merchant under Merchants, then call the payment API (see Connect). To see the dashboard with realistic traffic right now, generate a demo run: fictional customers, test cards, and a mix of ordinary payments, issuer declines, 3-D Secure challenges, card testing and account takeover."),
         can("settings:manage") ? h("button", { class: "primary", type: "button", onclick: async (e) => {
           e.target.disabled = true;
@@ -80,13 +80,13 @@ export async function initOverview() {
         } }, "Generate 120 demo payments") : null));
     } else {
       parts.push(h("div", { class: "cols" },
-        h("div", { class: "card" }, h("h3", {}, "Fraud score distribution"), histogram(o.score_histogram),
+        h("div", { class: "card" }, h("h2", {}, "Fraud score distribution"), histogram(o.score_histogram),
           h("p", { class: "muted" }, `Decisions: ${["APPROVE", "CHALLENGE", "DECLINE"].map((d) => `${o.fraud_decisions[d] || 0} ${d.toLowerCase()}`).join(" · ")}`)),
-        h("div", { class: "card" }, h("h3", {}, "Payments per day"), dailyBars(o.daily))),
+        h("div", { class: "card" }, h("h2", {}, "Payments per day"), dailyBars(o.daily))),
       h("div", { class: "cols" },
-        h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Status"), h("th", { class: "num" }, "Payments"))),
+        flushCard("Payments by status", h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Status"), h("th", { class: "num" }, "Payments"))),
           h("tbody", {}, ...Object.entries(o.by_status).sort((a, b) => b[1] - a[1]).map(([s, n]) => h("tr", {}, h("td", {}, badge(PAYMENT, s)), h("td", { class: "num" }, n.toLocaleString())))))),
-        h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Connector"), h("th", { class: "num" }, "Payments"), h("th", { class: "num" }, "Approved"))),
+        flushCard("Payments by connector", h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Connector"), h("th", { class: "num" }, "Payments"), h("th", { class: "num" }, "Approved"))),
           h("tbody", {}, ...o.psp.map((p) => h("tr", {}, h("td", {}, p.psp), h("td", { class: "num" }, p.n), h("td", { class: "num" }, p.approved))))))));
     }
     fill(body, ...parts);

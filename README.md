@@ -209,6 +209,13 @@ contributions of the walk become the reason codes. The 17 features (`amount_log`
 `country_mismatch`, `account_age_hours_log`) come from the feature store and the request; they are the same ones at training
 and at scoring time.
 
+**Which features become reasons.** A feature is reported only when its attribution is above 0.05 **and** its value lies on the
+risky side of at least one split the model uses for it. Which side is risky follows the reason code (a new account and a fast
+checkout are risky when low, every other feature when high); the threshold is the nearest split on the feature that really
+ranks that side higher. Trees fitted on noise give a feature a small positive attribution even for a harmless value (0 to 2
+cards carry about 0.07 although the model only splits at 3, 4 and 5, so a new customer used to be told
+`MANY_CARDS_ON_ACCOUNT`); such a value is no reason. The scores, the model file and its version are unchanged.
+
 **How the bundled model was trained.** `make train` generates **1,000,000 synthetic rows** (`src/paybroker/synth.py`; vectorised,
 about a quarter of a second and 70 MB) in the original class mix scaled up: 78 % ordinary traffic (including *busy shoppers*,
 who pay several times in an hour with the user, card, IP and device counters rising together, and *shared networks*, many

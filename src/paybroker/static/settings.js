@@ -1,5 +1,6 @@
 import { api } from "/kit/api.js";
 import { fmtDate, $, copy, field, fill, h, toast, confirmDialog } from "/kit/ui.js";
+import { flushCard, headCell } from "/static/common.js";
 import { can } from "/kit/session.js";
 import { renderMaintenance } from "/static/maintenance.js";
 import { renderModel } from "/static/model.js";
@@ -68,7 +69,7 @@ function paintAccounts(acc) {
     h("td", {}, a.has_key ? `…${a.api_key_last4}` : h("span", { class: "muted" }, "no key")),
     h("td", { class: "actions" }, testCell(a), " ", h("button", { class: "secondary small", type: "button", onclick: () => editAccount(acc, a) }, "Edit"), " ",
       h("button", { class: "danger small", type: "button", onclick: async () => { if (!(await confirmDialog(`Delete "${a.name}"?`, { title: "Delete account", confirmLabel: "Delete", danger: true }))) return; try { await api(`/api/accounts/${a.id}`, { method: "DELETE" }); renderAccounts(); } catch (e) { toast(e.message, true); } } }, "Delete"))))];
-  fill($("acc-table"), list.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map((t) => h("th", {}, t)))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."));
+  fill($("acc-table"), list.length ? flushCard("AI accounts", h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Provider", "Chat model", "Key", ""].map(headCell))), h("tbody", {}, list))) : h("p", { class: "hint" }, "No accounts yet."));
 }
 
 function editAccount(acc, a) {
@@ -103,7 +104,7 @@ async function renderSecurity() {
   const table = h("div", {});
   async function renderTable() {
     const list = await api("/api/tokens");
-    fill(table, list.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Token", "Access", "Created", "Last used", ""].map((t) => h("th", {}, t)))),
+    fill(table, list.length ? flushCard("Operator tokens", h("table", {}, h("thead", {}, h("tr", {}, ...["Name", "Token", "Access", "Created", "Last used", ""].map(headCell))),
       h("tbody", {}, list.map((t) => h("tr", {}, h("td", { class: "title" }, t.name), h("td", {}, h("code", {}, `${t.prefix}…`)), h("td", {}, t.scope), h("td", {}, fmtDate(t.created_at)), h("td", {}, fmtDate(t.last_used_at)),
         h("td", { class: "actions" }, t.revoked_at ? h("span", { class: "muted" }, "revoked") : h("button", { class: "danger small", type: "button", onclick: async () => {
           if (!(await confirmDialog(`Revoke "${t.name}"? Clients using it stop working immediately.`, { title: "Revoke token", confirmLabel: "Revoke", danger: true }))) return;

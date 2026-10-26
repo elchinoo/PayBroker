@@ -1,6 +1,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { $, copy, field, fill, fmtDate, fmtDateTime, h, toast, confirmDialog } from "/kit/ui.js";
+import { flushCard, headCell } from "/static/common.js";
 
 export async function initMerchants() {
   const box = $("view-merchants");
@@ -10,7 +11,7 @@ export async function initMerchants() {
   fill(box,
     h("div", { class: "row" }, h("h1", {}, "Merchants"), can("merchants:manage") ? h("button", { class: "primary", type: "button", onclick: newMerchant }, "New merchant") : null),
     h("p", { class: "muted" }, "A merchant is a business that sends payments. Each has secret keys for its server (authorize, capture, refund), publishable keys for the browser (only exchange a test card for a token), routing preferences and an optional signed webhook."),
-    h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Merchant", "Id", "Status", "Webhook", "Payments", "Created"].map((t) => h("th", {}, t)))),
+    flushCard("Merchants", h("table", {}, h("thead", {}, h("tr", {}, ...["Merchant", "Id", "Status", "Webhook", "Payments", "Created"].map(headCell))),
       h("tbody", {}, list.items.map((m) => h("tr", { class: "clickable", tabindex: "0", onclick: () => openMerchant(m.id), onkeydown: (e) => { if (e.key === "Enter") openMerchant(m.id); } },
         h("td", { class: "title" }, m.name), h("td", {}, h("code", {}, m.id)), h("td", {}, h("span", { class: `badge ${m.status === "active" ? "ok" : "bad"}` }, m.status)),
         h("td", { class: "wrap" }, m.webhook_url || h("span", { class: "muted" }, "none")), h("td", { class: "num" }, m.payments), h("td", {}, fmtDate(m.created_at)))))),
@@ -100,7 +101,7 @@ async function openMerchant(id) {
       try { const k = await api(`/api/merchants/${id}/keys`, { method: "POST", json: { kind: kkind.value, name: kname.value } }); kname.value = ""; show(`New ${k.kind} key.`, k.key); } catch (ex) { toast(ex.message, true); }
     } }, field("Name", kname), field("Kind", kkind), h("button", { class: "primary", type: "submit" }, "Create key")) : null,
     reveal,
-    h("table", {}, h("thead", {}, h("tr", {}, ...["Key", "Kind", "Name", "Last used", ""].map((t) => h("th", {}, t)))), keyRows));
+    h("table", {}, h("thead", {}, h("tr", {}, ...["Key", "Kind", "Name", "Last used", ""].map(headCell))), keyRows));
   function paintKeys() {
     fill(keyRows, current.keys.map((k) => h("tr", {}, h("td", {}, h("code", {}, `${k.prefix}…`)), h("td", {}, k.kind), h("td", {}, k.name), h("td", {}, fmtDate(k.last_used_at)),
       h("td", { class: "actions" }, k.revoked_at ? h("span", { class: "muted" }, "revoked") : manage ? h("button", { class: "danger small", type: "button", onclick: async () => {
@@ -134,6 +135,6 @@ async function openMerchant(id) {
   fill($("detail-body"),
     head,
     keys, originsForm, settingsForm, whForm,
-    events.items.length ? h("div", { class: "card flush" }, h("table", {}, h("thead", {}, h("tr", {}, ...["Recent event", "Type", "Status", "Attempts", "Last HTTP", "When"].map((t) => h("th", {}, t)))),
+    events.items.length ? flushCard("Recent webhook events", h("table", {}, h("thead", {}, h("tr", {}, ...["Recent event", "Type", "Status", "Attempts", "Last HTTP", "When"].map(headCell))),
       h("tbody", {}, events.items.map((w) => h("tr", {}, h("td", {}, h("code", {}, w.event_id)), h("td", {}, w.type), h("td", {}, w.status), h("td", {}, w.attempts), h("td", {}, w.last_code ?? ""), h("td", {}, fmtDateTime(w.created_at))))))) : null);
 }

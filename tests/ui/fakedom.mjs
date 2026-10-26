@@ -16,6 +16,7 @@ register("data:text/javascript," + encodeURIComponent(`export async function res
   return n(s, c);
 }`));
 
+const modals = [];   // open modal dialogs, last = topmost
 class Text { constructor(d) { this.nodeType = 3; this.data = String(d); this.parent = null; } get textContent() { return this.data; } }
 
 export class El {
@@ -36,7 +37,7 @@ export class El {
       if (this.tag === "select" && k.tag === "option" && (this.children.length === 1 || k.selected)) this._value = k._value;   // a select shows its selected (else first) option
     }
   }
-  remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }   // confirmDialog removes its overlay
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }   // confirmDialog removes its dialog
   replaceChildren(...kids) { for (const c of this.children) c.parent = null; this.children = []; this.append(...kids); }
   setAttribute(k, v) {
     this.attrs[k] = String(v);
@@ -49,7 +50,10 @@ export class El {
   get textContent() { return this.children.map((c) => c.textContent).join(""); }
   set textContent(v) { this.replaceChildren(new Text(v)); }
   focus() { document.activeElement = this; }
-  showModal() { this.open = true; } close() { this.open = false; }
+  // <dialog>: showModal() stacks it  (the browser makes everything outside the topmost modal dialog inert), close() unstacks it.
+  showModal() { this.open = true; if (!modals.includes(this)) modals.push(this); this.attrs.open = ""; }
+  close() { this.open = false; delete this.attrs.open; const i = modals.indexOf(this); if (i >= 0) modals.splice(i, 1); }
+  contains(n) { for (let e = n; e; e = e.parent) if (e === this) return true; return false; }
   matches() { return false; }
   _all(out = []) { for (const c of this.children) if (c.nodeType === 1) { out.push(c); c._all(out); } return out; }
   querySelectorAll(sel) {
@@ -72,12 +76,12 @@ globalThis.document = {
 globalThis.window = { dispatchEvent() {}, addEventListener() {} };
 globalThis.CustomEvent = class {};
 globalThis.location = { origin: "http://x", hash: "", search: "", pathname: "/" };
-// No window.confirm/alert/prompt here on purpose: the pages use the kit's confirmDialog/promptDialog (an overlay under <body>), and a
+// No window.confirm/alert/prompt here on purpose: the pages use the kit's confirmDialog/promptDialog (a native modal <dialog> under <body>), and a
 // native call would throw. Tests answer the dialog with `dialogs.answer(...)`, or leave `dialogs.auto` on so one is accepted as it opens.
 
 /** The kit's confirm/prompt modal: every dialog that opened is recorded; with `auto` on (default) each is accepted, or cancelled when
  *  `auto = "cancel"`, as soon as it mounts (typing the phrase when one is required). Handlers that `await` a dialog only continue then. */
-export const dialogs = { seen: [], auto: "ok", overlay: () => document.body.children.find((c) => c.className === "confirm-overlay") || null };
+export const dialogs = { seen: [], auto: "ok", overlay: () => document.body.children.find((c) => c.tag === "dialog" && c.className === "confirm-dialog") || null };
 dialogs.button = (label) => dialogs.overlay()?._all().find((e) => e.tag === "button" && e.textContent === label) || null;
 dialogs.answer = async (ok, { value } = {}) => {
   const o = dialogs.overlay();
@@ -86,6 +90,13 @@ dialogs.answer = async (ok, { value } = {}) => {
   if (ok && input && value !== undefined) { input.value = value; await fire(input, "input"); }
   const btns = o._all().filter((e) => e.tag === "button");
   await fire(ok ? btns[1] : btns[0], "click");   // cancel is first, confirm second
+};
+/** Escape as the browser delivers it: keydown first, then the native `cancel` of the topmost modal dialog unless the keydown was handled. */
+dialogs.escape = async () => {
+  const top = modals[modals.length - 1];
+  if (!top) throw new Error("no modal dialog is open");
+  const ev = await fire(top, "keydown", { key: "Escape" });
+  if (!ev.defaultPrevented && modals.includes(top)) await fire(top, "cancel");
 };
 setInterval(async () => {
   const o = dialogs.overlay();
@@ -101,7 +112,9 @@ setInterval(async () => {
 
 /** The static page shell: the elements index.html provides. */
 export function shell(ids) {
-  for (const id of ["toast", "detail", "detail-body", "form", "form-body", ...ids]) { const e = new El("div"); e.setAttribute("id", id); body.append(e); }
+  const make = (id, tag = "div") => { const e = new El(tag); e.setAttribute("id", id); return e; };
+  for (const win of ["detail", "form"]) { const w = make(win, "dialog"); w.append(make(`${win}-body`)); body.append(w); }   // the app windows are <dialog>s holding their body
+  for (const id of ["toast", ...ids]) body.append(make(id));
 }
 
 /** Stub fetch with routes: { "GET /api/rules": body | (init) => body | Response-like {status, body} }. Every call is recorded. */
@@ -137,8 +150,11 @@ export const allByText = (root, tag, label) => root._all().filter((e) => e.tag =
 
 /** Dispatch a DOM event to the element's listeners (and await them). */
 export async function fire(el, type, extra = {}) {
-  const ev = { type, target: el, key: "", preventDefault() {}, ...extra };
+  const ev = { type, target: el, key: "", preventDefault() { this.defaultPrevented = true; }, defaultPrevented: false, ...extra };
+  const top = modals[modals.length - 1];
+  if (top && !top.contains(el) && el !== top) return ev;   // inert: input outside the topmost modal dialog is not delivered
   for (const f of el.listeners[type] || []) await f(ev);
+  return ev;
 }
 export const click = (el) => fire(el, "click");
 export async function type(el, value) { el.value = value; await fire(el, "input"); }

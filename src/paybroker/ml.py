@@ -31,6 +31,9 @@ REASONS = {
     "account_age_hours_log": "NEW_ACCOUNT",
 }
 
+# Features whose reason code means a LOW value (a new account, a fast checkout); every other feature is risky when high.
+LOW_IS_RISKY = frozenset({"checkout_seconds_log", "account_age_hours_log"})
+
 # Limits for an uploaded model. They bound the work of one score (trees x depth) so a model cannot slow authorization.
 MAX_MODEL_BYTES = 2 * 1024 * 1024
 MAX_TREES = 500
@@ -132,6 +135,34 @@ class Model:
         self.version = str(doc.get("version", "unknown"))
         self.trained_on = doc.get("trained_on", "")      # a sentence, or a dict naming the sources and which features were real
         self.names = doc["features"]
+        self._risk = self._risk_sides()
+
+    def _risk_sides(self) -> list[tuple[bool, float] | None]:
+        """For each feature, where the values that justify its reason code lie: (True, t) for values >= t, (False, t) for values < t.
+
+        Which way a feature is risky comes from what its reason code says (LOW_IS_RISKY: a new account, a fast checkout; every
+        other one is risky when high). t is the nearest threshold among the model's splits on the feature that send that side to
+        the higher expected margin: the lowest for "high", the highest for "low". The trees are fitted on noise and also hold
+        splits that rank the other way, which is why a direction taken from the model alone is not trusted. When the model has no
+        such split the feature can never be a reason (t is infinite); None when it never splits on the feature at all."""
+        splits: list[list[tuple[float, float]]] = [[] for _ in self.names]      # per feature: (threshold, ev(right) - ev(left))
+        for t in self.trees:
+            for n, left in enumerate(t["l"]):
+                if left != -1:
+                    splits[t["f"][n]].append((t["t"][n], t["e"][t["r"][n]] - t["e"][left]))
+        out: list[tuple[bool, float] | None] = []
+        for name, rows in zip(self.names, splits, strict=True):
+            if not rows:
+                out.append(None)
+            elif name in LOW_IS_RISKY:
+                out.append((False, max((thr for thr, d in rows if d < 0), default=-math.inf)))
+            else:
+                out.append((True, min((thr for thr, d in rows if d > 0), default=math.inf)))
+        return out
+
+    def _on_risk_side(self, i: int, value: float) -> bool:
+        side = self._risk[i]
+        return side is not None and (value >= side[1] if side[0] else value < side[1])
 
     def score(self, x: list[float], explain: bool = True) -> tuple[int, list[tuple[str, float]]]:
         margin = self.base_margin
@@ -149,8 +180,10 @@ class Model:
         score = max(0, min(1000, round(p * 1000)))
         if not explain:
             return score, []
-        ranked = sorted(((self.names[i], c) for i, c in enumerate(contrib)), key=lambda kv: -kv[1])
-        return score, [(n, c) for n, c in ranked if c > 0.05]
+        ranked = sorted(((i, c) for i, c in enumerate(contrib)), key=lambda kv: -kv[1])
+        # A reason needs a real push (attribution above 0.05) AND a value on the risky side of the model's splits for that feature:
+        # a new customer with 0 cards still gets a small positive attribution from the splits at 3, 4 and 5, but is no risk.
+        return score, [(self.names[i], c) for i, c in ranked if c > 0.05 and self._on_risk_side(i, x[i])]
 
 
 @lru_cache(maxsize=1)

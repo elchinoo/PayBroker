@@ -81,6 +81,62 @@ def test_model_separates_clean_from_risky_and_explains():
     assert ml.reasons_from(contribs)
 
 
+def _attribution(model, x, feature):
+    """The raw attribution of one feature (what `score` filters), summed over the trees' paths."""
+    total = 0.0
+    for t in model.trees:
+        n = 0
+        while t["l"][n] != -1:
+            nxt = t["l"][n] if x[t["f"][n]] < t["t"][n] else t["r"][n]
+            if model.names[t["f"][n]] == feature:
+                total += t["e"][nxt] - t["e"][n]
+            n = nxt
+    return total
+
+
+NEW_CUSTOMER = dict(amount_log=6.0, amount_vs_avg_ratio=1.0, checkout_seconds_log=4.0, account_age_hours_log=0.0)
+
+
+@pytest.mark.parametrize("cards", [0.0, 1.0, 2.0])
+def test_a_customer_with_no_or_few_cards_is_not_told_many_cards(cards):
+    """The model splits distinct_cards_7d only at 3, 4 and 5, yet 0 to 2 cards still carry an attribution of about 0.07 (above the
+    0.05 floor); that is an artifact of the trees, not a risk, so MANY_CARDS_ON_ACCOUNT must not be a reason."""
+    model = ml.load()
+    x = _vec(**NEW_CUSTOMER, distinct_cards_7d=cards)
+    assert _attribution(model, x, "distinct_cards_7d") > 0.05            # the artifact exists, so this test can fail
+    _, contribs = model.score(x)
+    assert "distinct_cards_7d" not in dict(contribs)
+    assert "MANY_CARDS_ON_ACCOUNT" not in ml.reasons_from(contribs, limit=20)
+    assert "NEW_ACCOUNT" in ml.reasons_from(contribs, limit=20)           # the real reasons stay
+
+
+@pytest.mark.parametrize("cards", [3.0, 4.0, 5.0, 8.0])
+def test_three_or_more_cards_are_reported(cards):
+    model = ml.load()
+    _, contribs = model.score(_vec(**NEW_CUSTOMER, distinct_cards_7d=cards))
+    assert "distinct_cards_7d" in dict(contribs)
+    assert "MANY_CARDS_ON_ACCOUNT" in ml.reasons_from(contribs, limit=20)
+
+
+def test_reasons_need_the_risky_side_of_a_split_and_the_attribution_floor():
+    """A stump on each feature: a reason is the value on the risky side AND an attribution above 0.05."""
+    def doc(feature, lo, hi):
+        return {"features": list(features.VECTOR_FIELDS), "base_margin": 0.0, "version": "t", "trees": [{
+            "f": [features.VECTOR_FIELDS.index(feature), 0, 0], "t": [3.0, 0, 0], "l": [1, -1, -1], "r": [2, -1, -1],
+            "v": [0.0, lo, hi], "e": [(lo + hi) / 2, lo, hi]}]}
+    vec = _vec
+    high = ml.Model(doc("distinct_cards_7d", -0.4, 0.4))
+    assert [n for n, _ in high.score(vec(distinct_cards_7d=2.0))[1]] == []                   # the wrong side of the split at 3
+    assert [n for n, _ in high.score(vec(distinct_cards_7d=3.0))[1]] == ["distinct_cards_7d"]
+    low = ml.Model(doc("account_age_hours_log", 0.4, -0.4))                                  # low is risky for an account's age
+    assert [n for n, _ in low.score(vec(account_age_hours_log=2.0))[1]] == ["account_age_hours_log"]
+    assert [n for n, _ in low.score(vec(account_age_hours_log=3.0))[1]] == []
+    tiny = ml.Model(doc("distinct_cards_7d", 0.0, 0.08))                                      # the risky side, but a push under the floor
+    assert tiny.score(vec(distinct_cards_7d=9.0))[1] == []
+    backwards = ml.Model(doc("distinct_cards_7d", 0.4, -0.4))                                 # no split ranks MORE cards as riskier
+    assert backwards.score(vec(distinct_cards_7d=0.0))[1] == [] and backwards.score(vec(distinct_cards_7d=9.0))[1] == []
+
+
 def test_json_tree_walk_reproduces_xgboost_exactly():
     """scripts/train_model.py stores xgboost's own predictions for a few vectors; the pure-Python walk must match them."""
     doc = json.loads(ml.MODEL_PATH.read_text())

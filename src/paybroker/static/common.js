@@ -1,6 +1,11 @@
-import { h } from "/kit/ui.js";
+import { h, scrollRegion } from "/kit/ui.js";
 
 export const cents = (amount, currency) => (amount == null ? "" : `${(Number(amount) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency || ""}`.trim());
+
+// A card around a table that may scroll sideways: keyboard-reachable and named (axe: scrollable-region-focusable).
+export const flushCard = (label, ...kids) => scrollRegion(h("div", { class: "card flush" }, ...kids), label);
+// A header cell; an empty title is an action column, whose header is read as "Actions" (axe: empty-table-header).
+export const headCell = (t) => h("th", {}, t || h("span", { class: "sr-only" }, "Actions"));
 
 export const PAYMENT = {
   PROCESSING: ["Processing", "plain"], REQUIRES_ACTION: ["3-D Secure", "warn"], AUTHORIZED: ["Authorized", "ok"], CAPTURED: ["Captured", "ok"],

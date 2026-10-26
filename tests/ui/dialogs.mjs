@@ -39,6 +39,13 @@ dialogs.auto = "off";
 const asked = click(byText(document.body, "button", "Record a chargeback"));
 await settle();
 check(dialogs.overlay() && dialogs.button("Record chargeback"), "the chargeback prompt did not open");
+check(dialogs.overlay().tag === "dialog" && dialogs.overlay().open, "the prompt is a native <dialog> opened with showModal()");
+check(live("detail").open, "the payment window is a modal <dialog> underneath");
+const underneath = calls.length;
+await click(byText(live("detail-body"), "button", "Record a chargeback"));   // a click on the window below is inert while the prompt is up
+await settle();
+check(document.body.children.filter((c) => c.className === "confirm-dialog").length === 1, "a click under the modal prompt opened a second dialog");
+check(calls.length === underneath, "a click under the modal prompt reached the page");
 const input = dialogs.overlay()._all().find((e) => e.tag === "input");
 check(input.value === "customer disputes the charge", `the prompt lost its default reason: ${JSON.stringify(input.value)}`);
 await type(input, "   ");
@@ -53,8 +60,9 @@ check(hit("POST /api/payments/pay_c/chargeback")[0]?.body.reason === "card stole
 await openPayment("pay_c");
 const again = click(byText(document.body, "button", "Record a chargeback"));
 await settle();
-await dialogs.answer(false);
+await dialogs.escape();   // Escape: keydown, then the native cancel of the topmost modal dialog
 await again;
+check(dialogs.overlay() === null && live("detail").open, "Escape closed only the prompt, not the payment window");
 await settle();
-check(hit("POST /api/payments/pay_c/chargeback").length === 1, "cancelling the prompt still recorded a chargeback");
+check(hit("POST /api/payments/pay_c/chargeback").length === 1, "cancelling the prompt (Escape) still recorded a chargeback");
 done("destructive actions and the chargeback reason go through the kit dialogs and cancelling does nothing");
