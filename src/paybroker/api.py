@@ -83,6 +83,15 @@ async def lifespan(_: FastAPI):
 _LEGACY = {"read": "payments:read", "full": "settings:manage", "metrics": "metrics:scrape"}
 
 
+def _can(p: Principal, permission: str) -> bool:
+    """`p.can`, except that the provisioning scope counts for services and tokens only: a person's token (sub_type user) that
+    happens to carry `paybroker.admin` gets what their roles give and nothing from that scope."""
+    if p.kind == "user" and core.ADMIN_SCOPE in p.scopes:
+        held = core.APP_AUTH.permissions_for(roles=p.roles, scopes=p.scopes - {core.ADMIN_SCOPE})
+        return "*" in held or permission in held
+    return p.can(permission)
+
+
 def require(*perms: str):
     """Operator dependency: the caller needs ANY of the permissions (or an old scope name: read, full, metrics).
     A merchant key never passes: it carries only payment permissions, and these routes ask for operator ones."""
@@ -92,7 +101,7 @@ def require(*perms: str):
         p = core.auth.authenticate(request)
         if p is None:
             raise HTTPException(401, "authentication required")
-        if p.kind == "merchant" or not any(p.can(w) for w in wanted):
+        if p.kind == "merchant" or not any(_can(p, w) for w in wanted):
             raise HTTPException(403, f"this credential cannot do that (it needs one of: {', '.join(wanted)})")
         return p
 

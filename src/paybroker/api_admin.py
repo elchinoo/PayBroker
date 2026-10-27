@@ -126,6 +126,11 @@ class DemoBody(_B):
     seed: int = Field(7, ge=0, le=10**9)
 
 
+def _who(p) -> str:
+    """The audit label of a caller: a service is named by its client id (stable), a person by their name."""
+    return p.subject[:60] if p.kind == "service" else p.actor
+
+
 def build_router(require, forget_merchants, public_url) -> APIRouter:
     r = APIRouter(prefix="/api")
     read, review, manage_rules = Depends(require("payments:read")), Depends(require("cases:review")), Depends(require("rules:manage"))
@@ -290,13 +295,15 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             return fn()
         except merchants.NotFound as exc:
             raise HTTPException(404, str(exc)) from exc
+        except merchants.Duplicate as exc:
+            raise HTTPException(409, str(exc)) from exc
         except (merchants.MerchantError, vault.VaultError, UnsafeURL) as exc:
             raise HTTPException(422, str(exc)) from exc
 
     @r.get("/merchants", dependencies=[read])
-    def list_merchants():
+    def list_merchants(name: str | None = Query(None, min_length=1, max_length=100, description="only the merchant with exactly this name")):
         with connect() as conn:
-            out = merchants.listing(conn)
+            out = merchants.listing(conn, name)
             conn.rollback()
         return {"items": out, "defaults": merchants.DEFAULTS}
 
@@ -304,7 +311,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     def create_merchant(body: MerchantBody, p=merch):
         def run():
             with connect() as conn:
-                return merchants.create(conn, body.name, body.settings, body.allowed_origins, actor=p.actor)
+                return merchants.create(conn, body.name, body.settings, body.allowed_origins, actor=_who(p))
         return _merchant_call(run)
 
     @r.get("/merchants/{merchant_id}", dependencies=[read])
@@ -322,32 +329,32 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
         def run():
             with connect() as conn:
                 out = merchants.update(conn, merchant_id, name=body.name, status=body.status, settings=body.settings,
-                                       allowed_origins=body.allowed_origins, actor=p.actor)
+                                       allowed_origins=body.allowed_origins, actor=_who(p))
             forget_merchants()
             return out
         return _merchant_call(run)
 
-    @r.put("/merchants/{merchant_id}/webhook", dependencies=[merch])
-    def set_webhook(merchant_id: str, body: WebhookBody):
+    @r.put("/merchants/{merchant_id}/webhook")
+    def set_webhook(merchant_id: str, body: WebhookBody, p=merch):
         def run():
             with connect() as conn:
-                row, secret = merchants.set_webhook(conn, merchant_id, body.url)
+                row, secret = merchants.set_webhook(conn, merchant_id, body.url, actor=_who(p))
             forget_merchants()
             return {"merchant": row, "signing_secret": secret}
         return _merchant_call(run)
 
-    @r.post("/merchants/{merchant_id}/keys", status_code=201, dependencies=[merch])
-    def create_key(merchant_id: str, body: KeyBody):
+    @r.post("/merchants/{merchant_id}/keys", status_code=201)
+    def create_key(merchant_id: str, body: KeyBody, p=merch):
         def run():
             with connect() as conn:
-                key_id, raw = merchants.new_key(conn, merchant_id, body.kind, body.name)
+                key_id, raw = merchants.new_key(conn, merchant_id, body.kind, body.name, actor=_who(p))
             return {"id": key_id, "key": raw, "kind": body.kind}
         return _merchant_call(run)
 
-    @r.delete("/merchants/{merchant_id}/keys/{key_id}", dependencies=[merch])
-    def revoke_key(merchant_id: str, key_id: int):
+    @r.delete("/merchants/{merchant_id}/keys/{key_id}")
+    def revoke_key(merchant_id: str, key_id: int, p=merch):
         with connect() as conn:
-            ok = auth.revoke_merchant_key(conn, merchant_id, key_id)
+            ok = auth.revoke_merchant_key(conn, merchant_id, key_id, actor=_who(p))
         forget_merchants()
         if not ok:
             raise HTTPException(404, "key not found or already revoked")

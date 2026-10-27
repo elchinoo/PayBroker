@@ -10,6 +10,7 @@ import time
 
 from apgkit.auth import Principal
 from apgkit.ids import sha256
+from psycopg.types.json import Jsonb
 
 from . import core
 
@@ -35,12 +36,20 @@ def setup_code() -> str:
 
 
 # ---- merchant keys ------------------------------------------------------------------------------------
-def create_merchant_key(conn, merchant_id: str, kind: str, name: str = "") -> tuple[int, str]:
+def _audit(conn, actor: str | None, action: str, detail: dict) -> None:
+    if actor is not None:
+        conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s)", (actor, action, Jsonb(detail)))
+
+
+def create_merchant_key(conn, merchant_id: str, kind: str, name: str = "", actor: str | None = None) -> tuple[int, str]:
+    """Create a key; with `actor` the creation leaves an admin_audit row (merchant, key id, kind, name, prefix: never the key)."""
     if kind not in {"secret", "publishable"}:
         raise ValueError("kind must be 'secret' or 'publishable'")
     raw = (SECRET_PREFIX if kind == "secret" else PUBLISHABLE_PREFIX) + secrets.token_urlsafe(32)
     row = conn.execute("INSERT INTO merchant_key (merchant_id, kind, name, prefix, key_hash) VALUES (%s,%s,%s,%s,%s) "
                        "RETURNING id", (merchant_id, kind, name[:60], raw[:12], sha256(raw))).fetchone()
+    _audit(conn, actor, "merchant.key_create", {"merchant_id": merchant_id, "key_id": row["id"], "kind": kind, "name": name[:60],
+                                                "prefix": raw[:12]})
     conn.commit()
     return row["id"], raw
 
@@ -88,9 +97,12 @@ def list_merchant_keys(conn, merchant_id: str) -> list[dict]:
                         "WHERE merchant_id=%s ORDER BY id DESC", (merchant_id,)).fetchall()
 
 
-def revoke_merchant_key(conn, merchant_id: str, key_id: int) -> bool:
+def revoke_merchant_key(conn, merchant_id: str, key_id: int, actor: str | None = None) -> bool:
     row = conn.execute("UPDATE merchant_key SET revoked_at = now() WHERE id=%s AND merchant_id=%s AND revoked_at IS NULL "
-                       "RETURNING id", (key_id, merchant_id)).fetchone()
+                       "RETURNING id, kind, name, prefix", (key_id, merchant_id)).fetchone()
+    if row:
+        _audit(conn, actor, "merchant.key_revoke", {"merchant_id": merchant_id, "key_id": key_id, "kind": row["kind"], "name": row["name"],
+                                                    "prefix": row["prefix"]})
     conn.commit()
     forget_keys()
     return row is not None

@@ -139,6 +139,7 @@ Deliveries are at least once: use `id` to deduplicate.
 Permissions (what a role or token scope grants): `payments:read`, `cases:review`, `rules:manage`, `merchants:manage`,
 `settings:manage`, `training:export`, `model:manage`, `data:reset`, `mcp:use`, `metrics:scrape`. Three of them (`training:export`,
 `model:manage` and `data:reset`) belong to the `admin` role and the `full` scope only. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
+A service token with scope `paybroker.admin` holds `merchants:manage` and `payments:read` and nothing else (see *Provisioning from another service*).
 Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token calls don't need it.
 
 | Call | Needs | Notes |
@@ -153,6 +154,7 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `GET /api/rules`, `POST /api/rules`, `PATCH /api/rules/{id}` `{enabled}`, `DELETE /api/rules/{id}` | read / `rules:manage` | the definition is validated; the fields and operators are returned by the GET |
 | `GET /api/suggestions`, `POST /api/suggestions/run`, `POST /api/suggestions/{id}/decide` `{approve}` | read / `rules:manage` | nothing activates until approved |
 | `GET/POST/DELETE /api/blacklist` | read / `cases:review` | kinds: `ip`, `device`, `card_fingerprint`, `bin`, `email_domain` |
+| `GET /api/merchants?name=` | `payments:read` | `name` keeps only the merchant with exactly that name |
 | `GET/POST /api/merchants`, `GET/PATCH /api/merchants/{id}`, `PUT .../webhook`, `POST/DELETE .../keys` | read / `merchants:manage` | keys and the webhook secret are returned once |
 | `GET /api/connectors`, `PATCH /api/connectors/{name}` `{enabled}` | read / `merchants:manage` | |
 | `GET /api/webhook-events` | `payments:read` | |
@@ -194,6 +196,40 @@ Merchant settings (`PATCH /api/merchants/{id}` with `settings`): `preferred_psps
 
 Fraud rules are `{"all": [...]}`, `{"any": [...]}` or `{"field", "op", "value"}`, nested at most 3 levels and 12 conditions, with
 operators `== != > >= < <= in not_in`. `GET /api/rules` lists the allowed fields.
+
+### Provisioning from another service
+
+For a deploy tool that connects a shop to PayBroker with no copied keys. Get a service token from the identity provider
+(`client_credentials`, audience `paybroker`, scope `paybroker.admin`). The scope maps to `merchants:manage` and `payments:read` only;
+`data:reset`, `settings:manage`, rules, cases, training and model routes answer 403, and so do the payment routes (`/v1`). Only a
+service token (`sub_type: service`) can hold it; on a person's token the scope is ignored. A token with only `paybroker.read` cannot
+change merchants (403). Make it safe to repeat:
+
+| Call | Answer |
+|---|---|
+| `GET /api/merchants?name=ShopFront` | `{"items": [{id, name, status, webhook_url, allowed_origins, created_at, payments}], "defaults": {...}}`, empty `items` when none |
+| `POST /api/merchants` `{"name", "allowed_origins"?, "settings"?}` | 201 the merchant (`id`, `name`, `status`, `webhook_url`, `has_webhook_secret`, `settings`, `allowed_origins`, `created_at`); **409** when a merchant of that name exists (find first, create on an empty list) |
+| `GET /api/merchants/{id}` | the merchant plus `keys: [{id, kind, name, prefix, created_at, last_used_at, revoked_at}]`: `prefix` is the first 12 characters of the key (`sk_test_` and 4 more), the secret is never returned again; revoked keys stay listed with `revoked_at` |
+| `PATCH /api/merchants/{id}` `{"allowed_origins": [...]}` | the merchant; the list is replaced as a whole |
+| `PUT /api/merchants/{id}/webhook` `{"url"}` | `{"merchant": {...}, "signing_secret": "whsec_..."}`: a new secret every time, returned once (422 until the vault has an admin password, or when the URL is refused) |
+| `POST /api/merchants/{id}/keys` `{"kind": "secret"\|"publishable", "name"?}` | 201 `{"id", "key", "kind"}`: the key is returned once; `name` (up to 60 characters) lets the caller find the keys it made |
+| `DELETE /api/merchants/{id}/keys/{key_id}` | `{"revoked": key_id}`; 404 when unknown or already revoked |
+
+The merchant name is unique among merchants created through the API (older rows may repeat a name). Each change writes an
+`admin_audit` row whose actor is the service's client id: `merchant.create`, `merchant.allowed_origins` (from, to),
+`merchant.webhook` (from, to, `secret_rotated`), `merchant.key_create` and `merchant.key_revoke` (merchant, key id, kind, name,
+prefix). No row holds a key or signing secret.
+
+```bash
+TOKEN=$(curl -s "$IDP/oauth/token" -d grant_type=client_credentials -d client_id=ecoctl -d client_secret="$SECRET" \
+        -d audience=paybroker -d scope=paybroker.admin | jq -r .access_token)
+H="Authorization: Bearer $TOKEN"
+MID=$(curl -s -H "$H" "$PB/api/merchants?name=ShopFront" | jq -r '.items[0].id // empty')
+[ -n "$MID" ] || MID=$(curl -s -H "$H" -H 'content-type: application/json' -d '{"name":"ShopFront"}' "$PB/api/merchants" | jq -r .id)
+curl -s -X PATCH -H "$H" -H 'content-type: application/json' -d '{"allowed_origins":["https://shop.example.com"]}' "$PB/api/merchants/$MID"
+curl -s -X PUT -H "$H" -H 'content-type: application/json' -d '{"url":"https://shop.example.com/webhooks/paybroker"}' "$PB/api/merchants/$MID/webhook"   # signing_secret, once
+curl -s -H "$H" -H 'content-type: application/json' -d '{"kind":"secret","name":"shopfront"}' "$PB/api/merchants/$MID/keys"                               # key, once
+```
 
 ## MCP (`/mcp`)
 

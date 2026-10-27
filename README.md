@@ -444,8 +444,19 @@ Standalone, the first-run admin has everything. Federated with the identity prov
 | `operator` | read, manage merchants, keys, webhooks and connectors, use MCP |
 | `viewer` | read and use MCP |
 
-Services use `client_credentials` with scope `paybroker.read` or `paybroker.metrics`. Merchant API keys are a different kind
+Services use `client_credentials` with scope `paybroker.read`, `paybroker.metrics` or `paybroker.admin`. Merchant API keys are a different kind
 of credential: they can reach only the payment API, never an operator route, and operator credentials cannot make payments.
+
+### Provisioning from another service
+
+A deploy tool (`ecoctl`) can connect a shop to PayBroker without anyone copying keys by hand. It asks the identity provider for a
+service token (`client_credentials`, audience `paybroker`, scope `paybroker.admin`) and calls the merchant API with it. The scope
+grants exactly `merchants:manage` and `payments:read`: merchants, their keys, webhook and browser origins, plus the read views. It does
+not grant `data:reset`, `settings:manage` (AI accounts, operator tokens, the vault), rules, cases, training or models. Only a service
+token can use it: a person's token that carries the scope still gets only what their roles give. Every change is recorded in
+`admin_audit` with the service's client id as the actor (`merchant.create`, `merchant.allowed_origins`, `merchant.webhook`,
+`merchant.key_create`, `merchant.key_revoke`; never a key or secret). The calls and an example are in API.md. The manifest entry of
+PayBroker in the ecosystem must list `exposes: [paybroker.read, paybroker.metrics, paybroker.admin]`.
 
 ## Configuration
 

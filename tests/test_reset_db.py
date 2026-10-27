@@ -32,6 +32,13 @@ def shop(client, op):
     return mid, bearer(sk), bearer(pk)
 
 
+def resets() -> int:
+    with connect() as conn:
+        n = conn.execute("SELECT count(*) AS n FROM admin_audit WHERE action='data.reset'").fetchone()["n"]
+        conn.rollback()
+    return n
+
+
 def counts(tables=None) -> dict:
     with connect() as conn:
         names = tables or [r["tablename"] for r in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")]
@@ -99,7 +106,7 @@ def test_reset_deletes_exactly_the_transaction_tables_and_keeps_the_configuratio
     for t, n in before.items():                                      # every other table is exactly as it was
         if t not in maintenance.TABLES and t != "admin_audit":
             assert after[t] == n, f"{t} must be kept"
-    assert after["admin_audit"] == before.get("admin_audit", 0) + 1
+    assert resets() == 1                                              # (other audit rows, like merchant keys, are not resets)
     assert set(before) - set(maintenance.TABLES) <= set(maintenance.KEPT), "KEPT documents every table a reset leaves alone"
     assert out["seconds"] >= 0 and out["max_chunk_rows"] <= maintenance.CHUNK
 
@@ -234,14 +241,14 @@ def test_an_interrupted_reset_leaves_a_consistent_database_and_resumes(client, o
     assert half["outbox"] == half["webhook_event"] == half["fraud_assessment"] == half["three_ds_challenge"] == half["chargeback"] == 0
     with connect() as conn:                                            # no orphan: nothing points at a payment that is gone
         assert conn.execute("SELECT count(*) AS n FROM chargeback c LEFT JOIN transaction t USING (payment_id) WHERE t.id IS NULL").fetchone()["n"] == 0
-        a = conn.execute("SELECT detail FROM admin_audit ORDER BY id DESC LIMIT 1").fetchone()["detail"]
+        a = conn.execute("SELECT detail FROM admin_audit WHERE action='data.reset' ORDER BY id DESC LIMIT 1").fetchone()["detail"]
         conn.rollback()
     assert a["status"] == "interrupted" and a["error"] == "RuntimeError"
     out = maintenance.reset(actor="test", chunk=100)                   # the lock was released; the second run finishes the job
     assert out["deleted"]["transaction"] == half["transaction"]
     assert sum(counts(list(maintenance.TABLES)).values()) == 0
     with connect() as conn:
-        assert [r["detail"]["status"] for r in conn.execute("SELECT detail FROM admin_audit ORDER BY id")] == ["interrupted", "completed"]
+        assert [r["detail"]["status"] for r in conn.execute("SELECT detail FROM admin_audit WHERE action='data.reset' ORDER BY id")] == ["interrupted", "completed"]
         conn.rollback()
 
 
@@ -272,8 +279,8 @@ def test_two_resets_cannot_run_together(client, op, shop):
     assert result["first"]["deleted"]["outbox"] == 50
     assert reset(client, op).status_code == 200                       # the lock is free again
     with connect() as conn:                                            # the refused attempts left no audit row
-        assert [r["actor"] for r in conn.execute("SELECT actor FROM admin_audit ORDER BY id")] == ["a", conn.execute(
-            "SELECT actor FROM admin_audit ORDER BY id DESC LIMIT 1").fetchone()["actor"]]
+        assert [r["actor"] for r in conn.execute("SELECT actor FROM admin_audit WHERE action='data.reset' ORDER BY id")] == ["a", conn.execute(
+            "SELECT actor FROM admin_audit WHERE action='data.reset' ORDER BY id DESC LIMIT 1").fetchone()["actor"]]
         conn.rollback()
 
 
@@ -305,7 +312,7 @@ def test_a_wrong_phrase_deletes_nothing(client, op, shop):
     assert client.post(URL, json={}, headers=op).status_code == 422                                    # the phrase is required
     assert client.post(URL, json={"confirm": PHRASE, "include_training_data": "maybe"}, headers=op).status_code == 422
     assert client.post(URL, json={"confirm": PHRASE, "surprise": 1}, headers=op).status_code == 422
-    assert counts(["transaction", "admin_audit"]) == {"transaction": 1, "admin_audit": 0}
+    assert counts(["transaction"]) == {"transaction": 1} and resets() == 0
 
 
 def test_cookie_sessions_need_the_csrf_header(client):
@@ -358,7 +365,7 @@ def test_cli_requires_yes_and_the_exact_phrase(client, op, shop, capsys):
     assert cli.main(["reset-data", "--yes", "--confirm", "reset paybroker data"]) == 2
     err = capsys.readouterr().err
     assert "--yes" in err and PHRASE in err
-    assert counts(["transaction", "admin_audit"]) == {"transaction": 1, "admin_audit": 0}
+    assert counts(["transaction"]) == {"transaction": 1} and resets() == 0
 
 
 def test_cli_resets_and_can_keep_the_training_data(client, op, shop, monkeypatch, capsys):
@@ -373,7 +380,7 @@ def test_cli_resets_and_can_keep_the_training_data(client, op, shop, monkeypatch
     assert cli.main(["reset-data", "--yes", "--confirm", PHRASE, "--keep-rule-suggestions"]) == 0
     assert counts(["training_example"])["training_example"] == 0
     with connect() as conn:
-        actors = [r["actor"] for r in conn.execute("SELECT actor FROM admin_audit ORDER BY id")]
+        actors = [r["actor"] for r in conn.execute("SELECT actor FROM admin_audit WHERE action='data.reset' ORDER BY id")]
         conn.rollback()
     assert len(actors) == 2 and all(a.startswith("cli:") for a in actors)
     assert pay(client, ctx["sk"], ctx["tok"], "cli-key-after", customer="cus_cli", ip="198.51.100.151").status_code == 200

@@ -18,6 +18,7 @@ APP = "paybroker"
 COOKIE = "pb_session"
 CSRF_HEADER = "x-paybroker-csrf"
 SECRET_PREFIX, PUBLISHABLE_PREFIX = "sk_test_", "pk_test_"
+ADMIN_SCOPE = "paybroker.admin"
 
 db = Database(lambda: get_settings().database_url, vector=True, pool_max=get_settings().pool_max)
 vault = Vault("PAYBROKER")
@@ -51,6 +52,9 @@ ROLE_PERMISSIONS = {
 SCOPE_PERMISSIONS = {
     "read": frozenset({"payments:read", "mcp:use"}), "metrics": frozenset({"metrics:scrape"}), "full": ALL,
     "paybroker.read": frozenset({"payments:read", "mcp:use"}), "paybroker.metrics": frozenset({"metrics:scrape"}),
+    # provisioning by another service (ecoctl): merchants, their keys, webhooks and origins, and nothing else. Only service
+    # tokens may hold it (api.require ignores it on a person's token).
+    ADMIN_SCOPE: frozenset({"merchants:manage", "payments:read"}),
 }
 fed = from_env("PAYBROKER", APP)
 APP_AUTH = AppAuth(APP, fed.client_id, ROLE_PERMISSIONS, SCOPE_PERMISSIONS)

@@ -178,3 +178,86 @@ def test_sso_endpoints_are_404_when_federation_is_off(client, monkeypatch):
     monkeypatch.setattr(api, "fed", Federation("", AUD, None, None, True))
     assert client.get("/auth/login", follow_redirects=False).status_code == 404
     assert client.get("/api/session").json()["sso"] is None
+
+
+# ---- provisioning from another service (ecoctl): the paybroker.admin scope ------------------------------------------------
+def test_a_service_with_the_admin_scope_provisions_merchants_and_nothing_else(client, monkeypatch):
+    from paybroker.db import connect
+    monkeypatch.setattr("paybroker.netguard.socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
+    client.post("/api/admin-password", json={"new": "correct horse battery staple"}, headers=access(roles=["paybroker:admin"]))
+    eco = access(sub="ecoctl", sub_type="service", scope="paybroker.admin", client_id="ecoctl", name="Ecosystem CLI")
+    assert client.get("/api/merchants", headers=eco).json()["items"] == []
+    r = client.post("/api/merchants", headers=eco, json={"name": "ShopFront"})
+    assert r.status_code == 201
+    mid = r.json()["id"]
+    assert client.post("/api/merchants", headers=eco, json={"name": "ShopFront"}).status_code == 409           # find-or-create is safe
+    found = client.get("/api/merchants", headers=eco, params={"name": "ShopFront"}).json()["items"]
+    assert [m["id"] for m in found] == [mid]
+    assert client.get("/api/merchants", headers=eco, params={"name": "Shop"}).json()["items"] == []            # exact, not a prefix
+    assert client.get(f"/api/merchants/{mid}", headers=eco).json()["name"] == "ShopFront"
+    r = client.patch(f"/api/merchants/{mid}", headers=eco, json={"allowed_origins": ["https://shop.example.com"]})
+    assert r.status_code == 200 and r.json()["allowed_origins"] == ["https://shop.example.com"]
+    r = client.put(f"/api/merchants/{mid}/webhook", headers=eco, json={"url": "https://shop.example.com/hook"})
+    assert r.status_code == 200 and r.json()["signing_secret"].startswith("whsec_")
+    secret_key = client.post(f"/api/merchants/{mid}/keys", headers=eco, json={"kind": "secret", "name": "shopfront"})
+    assert secret_key.status_code == 201 and secret_key.json()["key"].startswith("sk_test_") and secret_key.json()["kind"] == "secret"
+    pub = client.post(f"/api/merchants/{mid}/keys", headers=eco, json={"kind": "publishable", "name": "shopfront"}).json()
+    assert pub["key"].startswith("pk_test_")
+    listed = client.get(f"/api/merchants/{mid}", headers=eco).json()["keys"]
+    assert {k["name"] for k in listed} == {"shopfront"} and {k["kind"] for k in listed} == {"secret", "publishable"}
+    assert all(set(k) >= {"id", "kind", "name", "prefix", "revoked_at"} and "key" not in k and "key_hash" not in k for k in listed)
+    shown = [secret_key.json()["key"], pub["key"], r.json()["signing_secret"]]
+    assert not any(s in str(client.get(f"/api/merchants/{mid}", headers=eco).json()) for s in shown)
+    assert client.delete(f"/api/merchants/{mid}/keys/{pub['id']}", headers=eco).json() == {"revoked": pub["id"]}
+    assert client.delete(f"/api/merchants/{mid}/keys/{pub['id']}", headers=eco).status_code == 404
+    # nothing beyond merchants: no reset, settings, model, rules, tokens, cases, training or metrics
+    assert client.post("/api/admin/data/reset", headers=eco, json={"confirm": "RESET PAYBROKER DATA"}).status_code == 403
+    assert client.get("/api/admin/data/reset", headers=eco).status_code == 403
+    assert client.get("/api/accounts", headers=eco).status_code == 403
+    assert client.get("/api/admin/triage/settings", headers=eco).status_code == 403
+    assert client.get("/api/tokens", headers=eco).status_code == 403
+    assert client.post("/api/rules", headers=eco, json={}).status_code == 403
+    assert client.post("/api/blacklist", headers=eco, json={"kind": "ip", "value": "1.2.3.4"}).status_code == 403
+    assert client.get("/metrics", headers=eco).status_code == 403
+    assert client.post("/api/demo/traffic", headers=eco, json={}).status_code == 403
+    for path in ("/api/admin/models", "/api/admin/training/settings", "/api/admin/training/stats", "/api/admin/training/export"):
+        assert client.get(path, headers=eco).status_code == 403, path
+    assert client.post("/api/admin/models/use-bundled", headers=eco).status_code == 403
+    assert client.post("/api/admin/training/purge", headers=eco).status_code == 403
+    assert client.post("/v1/payments/authorize", headers=eco, json={}).status_code == 403
+    # the trail: who, what, never a secret
+    with connect() as conn:
+        rows = conn.execute("SELECT actor, action, detail FROM admin_audit ORDER BY id").fetchall()
+        conn.rollback()
+    mine = [(r["actor"], r["action"]) for r in rows if r["actor"] == "ecoctl"]
+    assert mine == [("ecoctl", a) for a in ("merchant.create", "merchant.allowed_origins", "merchant.webhook", "merchant.key_create",
+                                            "merchant.key_create", "merchant.key_revoke")]
+    assert not any(s in str(rows) for s in shown)
+    assert [r["detail"]["key_id"] for r in rows if r["action"] == "merchant.key_revoke"] == [pub["id"]]
+
+
+def test_a_read_only_service_cannot_manage_merchants_and_a_person_cannot_use_the_admin_scope(client):
+    ro = access(sub="dashboard-bot", sub_type="service", scope="paybroker.read", client_id="dashboard-bot")
+    mid = client.post("/api/merchants", headers=access(roles=["paybroker:admin"]), json={"name": "Shop"}).json()["id"]
+    assert client.get("/api/merchants", headers=ro).status_code == 200
+    assert client.post("/api/merchants", headers=ro, json={"name": "X"}).status_code == 403
+    assert client.patch(f"/api/merchants/{mid}", headers=ro, json={"allowed_origins": []}).status_code == 403
+    assert client.put(f"/api/merchants/{mid}/webhook", headers=ro, json={"url": None}).status_code == 403
+    assert client.post(f"/api/merchants/{mid}/keys", headers=ro, json={"kind": "secret"}).status_code == 403
+    assert client.delete(f"/api/merchants/{mid}/keys/1", headers=ro).status_code == 403
+    # the metrics scope and a stranger do not either
+    assert client.post("/api/merchants", headers=access(sub="p", sub_type="service", scope="paybroker.metrics"), json={"name": "X"}).status_code == 403
+    # a person's token that carries the scope gets only what their roles give
+    person = access(sub="u9", sub_type="user", scope="paybroker.admin", roles=["paybroker:analyst"])
+    assert client.get("/api/payments", headers=person).status_code == 200
+    assert client.post("/api/merchants", headers=person, json={"name": "X"}).status_code == 403
+    assert client.post("/api/merchants", headers=access(sub="u9", scope="paybroker.admin"), json={"name": "X"}).status_code == 403
+    assert client.post("/api/merchants", headers=access(sub="u9", roles=["paybroker:operator"], scope="paybroker.admin"),
+                       json={"name": "X"}).status_code == 201                                                  # the role still counts
+
+
+def test_merchant_names_are_unique_for_new_merchants_and_ecoctl_scope_is_exactly_two_permissions(client):
+    assert core.SCOPE_PERMISSIONS["paybroker.admin"] == frozenset({"merchants:manage", "payments:read"})
+    admin = access(roles=["paybroker:admin"])
+    assert client.post("/api/merchants", headers=admin, json={"name": " Shop "}).status_code == 201
+    assert client.post("/api/merchants", headers=admin, json={"name": "Shop"}).status_code == 409

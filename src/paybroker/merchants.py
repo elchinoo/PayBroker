@@ -21,6 +21,10 @@ class NotFound(MerchantError):
     pass
 
 
+class Duplicate(MerchantError):
+    pass
+
+
 def clean_settings(raw: dict, psp_names: set[str]) -> dict:
     if not isinstance(raw, dict):
         raise MerchantError("settings must be an object")
@@ -69,9 +73,13 @@ def origin_listed(conn, origin: str) -> bool:
     return conn.execute("SELECT 1 FROM merchant WHERE status='active' AND %s = ANY(allowed_origins) LIMIT 1", (origin,)).fetchone() is not None
 
 
+def audit(conn, actor: str, action: str, detail: dict) -> None:
+    """One admin_audit row (not committed here: it commits with the change it records). `detail` never holds a secret."""
+    conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s)", (actor, action, Jsonb(detail)))
+
+
 def _audit_origins(conn, actor: str, merchant_id: str, before: list[str], after: list[str]) -> None:
-    conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s)", (
-        actor, "merchant.allowed_origins", Jsonb({"merchant_id": merchant_id, "from": before, "to": after})))
+    audit(conn, actor, "merchant.allowed_origins", {"merchant_id": merchant_id, "from": before, "to": after})
 
 
 def create(conn, name: str, settings: dict | None = None, allowed_origins: list[str] | None = None,
@@ -82,7 +90,12 @@ def create(conn, name: str, settings: dict | None = None, allowed_origins: list[
     s = clean_settings(settings or {}, psp_names(conn))
     o = clean_origins(allowed_origins or [])
     mid = new_id("mch_test_", 8)
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext('merchant.name'))")       # two concurrent creates of one name: the second sees the first
+    if conn.execute("SELECT 1 FROM merchant WHERE name=%s", (name,)).fetchone():
+        conn.rollback()
+        raise Duplicate("a merchant with that name already exists")
     conn.execute("INSERT INTO merchant (id, name, settings, allowed_origins) VALUES (%s,%s,%s,%s)", (mid, name, Jsonb(s), o))
+    audit(conn, actor, "merchant.create", {"merchant_id": mid, "name": name})
     if o:
         _audit_origins(conn, actor, mid, [], o)
     conn.commit()
@@ -98,11 +111,12 @@ def get(conn, merchant_id: str) -> dict:
     return row
 
 
-def listing(conn) -> list[dict]:
+def listing(conn, name: str | None = None) -> list[dict]:
+    """All merchants, newest first; `name` keeps those whose name is exactly that (names are unique for new merchants)."""
     return conn.execute(
-        "SELECT m.id, m.name, m.status, m.webhook_url, m.created_at, "
+        "SELECT m.id, m.name, m.status, m.webhook_url, m.allowed_origins, m.created_at, "
         "(SELECT count(*) FROM transaction t WHERE t.merchant_id=m.id) AS payments "
-        "FROM merchant m ORDER BY m.created_at DESC").fetchall()
+        "FROM merchant m WHERE (%s::text IS NULL OR m.name = %s) ORDER BY m.created_at DESC", (name, name)).fetchall()
 
 
 def update(conn, merchant_id: str, *, name: str | None, status: str | None, settings: dict | None,
@@ -121,11 +135,13 @@ def update(conn, merchant_id: str, *, name: str | None, status: str | None, sett
     return get(conn, merchant_id)
 
 
-def set_webhook(conn, merchant_id: str, url: str | None) -> tuple[dict, str | None]:
-    """Set (or clear) the webhook URL. Setting one generates a fresh signing secret, returned exactly once."""
-    get(conn, merchant_id)
+def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") -> tuple[dict, str | None]:
+    """Set (or clear) the webhook URL. Setting one generates a fresh signing secret, returned exactly once.
+    The audit row names the merchant and the URL (the secret is never in it)."""
+    old = get(conn, merchant_id)["webhook_url"]
     if not url:
         conn.execute("UPDATE merchant SET webhook_url=NULL, webhook_secret_enc=NULL WHERE id=%s", (merchant_id,))
+        audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": None})
         conn.commit()
         return get(conn, merchant_id), None
     if not vault.is_initialized(conn):
@@ -137,10 +153,11 @@ def set_webhook(conn, merchant_id: str, url: str | None) -> tuple[dict, str | No
     secret = "whsec_" + secrets.token_urlsafe(32)
     conn.execute("UPDATE merchant SET webhook_url=%s, webhook_secret_enc=%s WHERE id=%s",
                  (url, vault.encrypt(secret), merchant_id))
+    audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": url, "secret_rotated": True})
     conn.commit()
     return get(conn, merchant_id), secret
 
 
-def new_key(conn, merchant_id: str, kind: str, name: str) -> tuple[int, str]:
+def new_key(conn, merchant_id: str, kind: str, name: str, actor: str = "system") -> tuple[int, str]:
     get(conn, merchant_id)
-    return auth.create_merchant_key(conn, merchant_id, kind, name)
+    return auth.create_merchant_key(conn, merchant_id, kind, name, actor=actor)
