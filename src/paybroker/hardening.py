@@ -17,7 +17,6 @@ import logging
 
 import psycopg
 from apgkit import masking
-from psycopg import sql
 
 log = logging.getLogger("paybroker.hardening")
 
@@ -89,6 +88,9 @@ HIDDEN = (
     "llm_account",      # encrypted LLM provider keys
 )
 
+# Base tables the role must never read, with or without a view: `masking.reassert_forever` counts (and closes) drift on these.
+DENY = tuple(MASKED) + HIDDEN
+
 # Readable as they are: configuration and numbers with no personal data.
 READABLE = ("fraud_assessment", "fraud_rule", "rule_suggestion", "psp_connector", "outbox", "model_version", "training_example",
             "triage_llm_call", "schema_migrations",
@@ -100,23 +102,21 @@ RLS_MERCHANT = ("merchant", "merchant_key", "card", "transaction", "webhook_even
 RLS_OPERATOR = ("fraud_case", "chargeback", "admin_audit")
 
 
-def hide_table(conn: psycopg.Connection, table: str, readonly_role: str = READONLY_ROLE) -> dict:
-    """REVOKE SELECT on `table` from the role, no view. Same result shape as `masking.mask_view`."""
-    conn.commit()
-    prev, conn.autocommit = conn.autocommit, True
-    try:
-        row = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (readonly_role,)).fetchone()
-        if not row:
-            return {"applied": False, "reason": f"role {readonly_role} does not exist", "base_denied": False, "view_readable": False}
-        conn.execute(sql.SQL("REVOKE SELECT ON {} FROM {}").format(
-            sql.Identifier("public", table), sql.Identifier(readonly_role)))
-        ok = not conn.execute("SELECT has_table_privilege(%s, %s::regclass, 'SELECT') AS ok",
-                              (readonly_role, f'public."{table}"')).fetchone()["ok"]
-    finally:
-        conn.autocommit = prev
-    if not ok:
-        log.warning("hardening %s: %s can still read it (not the owner, or PUBLIC has SELECT)", table, readonly_role)
-    return {"applied": ok, "reason": "" if ok else "table still readable by the role", "base_denied": ok, "view_readable": False}
+def _denied_results(res: dict, tables: tuple[str, ...]) -> dict[str, dict]:
+    """`masking.deny_tables` result as one `mask_view`-shaped dict per table."""
+    out = {}
+    for t in tables:
+        ok = res["tables"].get(t, False)
+        if ok:
+            reason = ""
+        elif t in res["skipped"]:
+            reason = "table does not exist"
+        elif not res["tables"]:                      # the role is missing: deny_tables did nothing at all
+            reason = res["reason"]
+        else:
+            reason = "table still readable by the role"
+        out[t] = {"applied": ok, "reason": reason, "base_denied": ok, "view_readable": False}
+    return out
 
 
 def unclassified(conn: psycopg.Connection) -> list[str]:
@@ -131,8 +131,7 @@ def apply(conn: psycopg.Connection, readonly_role: str = READONLY_ROLE) -> dict:
     out: dict[str, dict] = {}
     for table, (view, columns) in MASKED.items():
         out[table] = masking.mask_view(conn, table, view, columns, readonly_role)
-    for table in HIDDEN:
-        out[table] = hide_table(conn, table, readonly_role)
+    out.update(_denied_results(masking.deny_tables(conn, HIDDEN, readonly_role), HIDDEN))
     if out and not any(r["applied"] for r in out.values()):
         log.info("read-only hardening skipped: %s", next(iter(out.values()))["reason"])
         return out

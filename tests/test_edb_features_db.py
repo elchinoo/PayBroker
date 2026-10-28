@@ -21,9 +21,9 @@ LOGIN = "pb_ro_login"
 
 
 # ---- kit version -----------------------------------------------------------------------------------------------
-def test_installed_kit_is_at_least_0_3_0():
+def test_installed_kit_is_at_least_0_3_1():
     import apgkit
-    assert tuple(int(x) for x in apgkit.__version__.split(".")[:3]) >= (0, 3, 0)
+    assert tuple(int(x) for x in apgkit.__version__.split(".")[:3]) >= (0, 3, 1)
 
 
 # ---- (a) database insights -----------------------------------------------------------------------------------------
@@ -240,3 +240,34 @@ def test_one_name_missing_means_no_signal_and_names_are_not_stored(client, shop,
     with connect() as c:
         dump = str(c.execute("SELECT t.request, fa.tier2_feature_snapshot FROM transaction t JOIN fraud_assessment fa ON fa.transaction_id = t.id").fetchall())
     assert "Zebediah" not in dump and "Peter Wong" not in dump
+
+
+def test_grants_after_startup_are_reasserted_and_reported(client, op, ro_role):
+    """`agentpg db-users create` / default privileges re-grant SELECT on base tables: one re-assert tick closes them again, and
+    /api/audit/verify says what was open. The forced row-level security report is untouched."""
+    from apgkit import masking
+
+    from paybroker import core
+    opened = ["transaction", "app_setting", "merchant_key"]          # a masked base table and two secrets tables
+    with connect() as c:
+        for t in opened:
+            c.execute(f'GRANT SELECT ON "{t}" TO a1p_readonly')
+        c.commit()
+        assert sorted(masking.drift(c, hardening.DENY)) == sorted(opened)
+    seen = client.get("/api/audit/verify", headers=op).json()
+    assert sorted(seen["masking"]["open_now"]) == sorted(opened) and seen["row_level_security"]["enforced"] is True
+    with _ro() as ro:
+        assert ro.execute("SELECT count(*) AS n FROM app_setting").fetchone()["n"] >= 0        # the hole is real
+    assert masking.reassert_tick(connect, hardening.apply, deny=hardening.DENY, metrics=core.metrics, name="pb_test") is True
+    st = masking.status("pb_test")
+    assert st["ok"] is True and st["drift"] == len(opened) and st["last_ok"]
+    with connect() as c:
+        assert masking.drift(c, hardening.DENY) == []
+    with _ro() as ro:
+        for t in opened:
+            _denied(ro, t)
+        assert ro.execute("SELECT count(*) AS n FROM transaction_masked").fetchone()["n"] >= 0
+    assert "masking_drift_tables_pb_test" in core.metrics.render()[0].decode()
+    after = client.get("/api/audit/verify", headers=op).json()
+    assert after["masking"]["open_now"] == [] and set(after["masking"]) == {"last_ok", "drift", "ok", "open_now"}
+    assert "masking" in client.get("/readyz").json()

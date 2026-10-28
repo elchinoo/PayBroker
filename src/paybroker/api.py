@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import sys
 import threading
@@ -6,6 +7,7 @@ from pathlib import Path
 
 import psycopg
 from apgkit import insights as insights_mod
+from apgkit import masking
 from apgkit.auth import Principal, TokenError
 from apgkit.auth.rp import safe_return_to
 from apgkit.guard import SecurityGuard
@@ -15,7 +17,21 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__, auth, cards, core, cors, merchants, ml, payments, routing, rules, vault, worker
+from . import (
+    __version__,
+    auth,
+    cards,
+    core,
+    cors,
+    hardening,
+    merchants,
+    ml,
+    payments,
+    routing,
+    rules,
+    vault,
+    worker,
+)
 from . import metrics as m
 from .config import get_settings
 from .core import COOKIE, CSRF_HEADER, fed, local
@@ -24,6 +40,7 @@ from .mcp_server import mcp
 
 STATIC = Path(__file__).resolve().parent / "static"
 _announced = False
+MASKING_EVERY = 300          # seconds between masking re-asserts (agentpg-kit apgkit.masking.reassert_forever)
 _stop = threading.Event()
 _threads: list[threading.Thread] = []
 
@@ -67,10 +84,14 @@ async def lifespan(_: FastAPI):
         t = threading.Thread(target=worker.flush_loop, args=(_stop,), daemon=True, name="paybroker-flush")
     t.start()
     _threads.append(t)
+    # Grants made after startup (`agentpg db-users create`, default privileges) reopen base tables to the read-only role: re-assert.
+    reassert = asyncio.create_task(masking.reassert_forever(connect, hardening.apply, MASKING_EVERY, deny=hardening.DENY, metrics=core.metrics))
     try:
         async with mcp_app.router.lifespan_context(mcp_app):
             yield
     finally:
+        reassert.cancel()
+        await asyncio.gather(reassert, return_exceptions=True)
         _stop.set()
         for th in _threads:
             th.join(timeout=3)
@@ -208,7 +229,7 @@ def readyz():
     try:
         with connect(retries=1) as conn:
             conn.execute("SELECT 1")
-        return {"status": "ready"}
+        return {"status": "ready", "masking": masking.status()}      # report only: drift never makes the app unready
     except Exception:  # noqa: BLE001 - never echo connection details
         return JSONResponse({"status": "waking-database"}, status_code=503)
 

@@ -4,6 +4,7 @@ import time
 from typing import Literal
 
 import psycopg
+from apgkit import masking
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
@@ -401,6 +402,8 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
         with connect() as conn:
             out = audit.verify(conn)
             out["row_level_security"] = hardening.rls_status(conn)
+            # base-table grants for the read-only role: the re-assert loop's last result, plus what is open right now
+            out["masking"] = {**masking.status(), "open_now": masking.drift(conn, hardening.DENY)}
             conn.rollback()
         return out
 

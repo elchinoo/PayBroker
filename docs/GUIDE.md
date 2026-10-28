@@ -692,7 +692,7 @@ SECURITY.md is the authoritative model; the points an operator should know:
 | Endpoint | Answer |
 |---|---|
 | `GET /healthz` | `200 {"status": "ok", "version": "..."}`; no database access. The image's `HEALTHCHECK` uses it. |
-| `GET /readyz` | `200 {"status": "ready"}` after a `SELECT 1`; `503 {"status": "waking-database"}` otherwise (details are never echoed) |
+| `GET /readyz` | `200 {"status": "ready", "masking": {last_ok, drift, ok}}` after a `SELECT 1` (`masking` is the re-assert loop status, report only); `503 {"status": "waking-database"}` otherwise (details are never echoed) |
 | `GET /metrics` | Prometheus; needs `metrics:scrape` (a `metrics` token or `paybroker.metrics` service token) |
 
 PayBroker families: `payment_broker_requests_total{status,psp}`, `payment_broker_fraud_score_distribution`, `payment_broker_latency_seconds{step}` (feature_fetch, tier1_rules, ml_inference, psp_roundtrip, total),
@@ -906,7 +906,7 @@ Everything here was found while checking this guide against the code. The code-v
 
 ## 17. EDB and AgentPG capabilities used by this app
 
-Background and the verified probe results: `ecosystem/docs/06-edb-and-agentpg-capabilities.md`. Needs agentpg-kit 0.3.0 or newer.
+Background and the verified probe results: `ecosystem/docs/06-edb-and-agentpg-capabilities.md`. Needs agentpg-kit 0.3.1 or newer (0.3.0 lacks the re-assert loop).
 
 ### 17.1 Database insights (EDB Stat Monitor, EDB Postgres Tuner, Query Advisor)
 
@@ -945,6 +945,7 @@ PayBroker never stores a card number, CVV, customer email (only its domain, in `
 - A **new table is readable by the role until it is classified** (default privileges re-grant on creation). `hardening.unclassified()` lists such tables, the hook logs a warning for each, and a test fails if a migration adds a table nobody classified: add it to `MASKED`, `HIDDEN` or `READABLE`.
 - The 12-hex hashes are unsalted SHA-256 prefixes: they hide the value from reading, not from a guess-and-compare of a low-entropy value.
 - `fraud_assessment.tier3_llm_analysis` and the feature snapshot are readable: they are derived numbers and the model's text, built without identifiers (the triage payload has no customer id or IP).
+- **Masking durability.** The hook above runs at startup only, and grants made after startup reopen tables: `agentpg db-users create` and AgentPG's default privileges give `a1p_readonly` SELECT on base tables again at any time, masked ones included. So the app re-asserts every 5 minutes (`masking.reassert_forever` in the lifespan, `hardening.apply` on its own connection; `hardening.DENY` is every masked base table plus the secrets tables). Between a grant and the next tick a base table is readable for up to 5 minutes. Drift is visible in the gauge `masking_drift_tables` (tables found open before the last re-assert; alert on `> 0`, and on a stale `masking_last_ok_timestamp`), in `masking` of `/readyz`, and in `masking` of `GET /api/audit/verify` (`last_ok`, `drift`, `ok`, plus `open_now`: base tables the role can read at that moment). The report never makes `/readyz` fail. Forced row-level security (section 18.3) is independent of this and stays in force whatever is granted.
 - Tested with a real read-only login role (`tests/test_edb_features_db.py`): base tables and secrets tables denied, masked views readable, writes refused, exactly the classified set readable.
 
 ### 17.3 The PayBroker MCP and AgentPG's restricted MCP
@@ -1004,7 +1005,7 @@ SELECT audit_verify();                 -- NULL when intact, else the first broke
 SELECT * FROM audit_verify_detail();   -- entries, first_broken, reason, head_seq, head_hash
 ```
 
-`GET /api/audit/verify` returns `{intact, entries, first_broken, reason, head: {seq, hash}, row_level_security}` and the **Audit** tab (admin only) has a *Verify the chain* button showing "Chain intact, N entries" or the first
+`GET /api/audit/verify` returns `{intact, entries, first_broken, reason, head: {seq, hash}, row_level_security, masking}` and the **Audit** tab (admin only) has a *Verify the chain* button showing "Chain intact, N entries" or the first
 broken entry (highlighted in the list) and why. `GET /api/audit?limit=&subject=` lists the newest entries. A read-only database login (`a1p_readonly`) can read both tables and run `audit_verify()`, so an
 auditor needs no application. What each failure looks like: a changed entry is reported at its own `seq`; a forger who also recomputes that hash is caught at the next entry; a deleted entry shows as a hole at the entry after it;
 entries cut off the end are caught by the head row; a forged extra entry fails its parent link.
