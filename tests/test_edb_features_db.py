@@ -62,7 +62,7 @@ def test_metrics_carry_the_insights_gauges(client, op):
 def ro_role():
     with connect() as c:
         c.execute("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='a1p_readonly') THEN CREATE ROLE a1p_readonly NOLOGIN; END IF; END $$")
-        c.execute(f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{LOGIN}') THEN CREATE ROLE {LOGIN} LOGIN; END IF; END $$")
+        c.execute(f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{LOGIN}') THEN CREATE ROLE {LOGIN} LOGIN PASSWORD 'ro-pw-test'; END IF; END $$")
         c.execute(f"GRANT a1p_readonly TO {LOGIN}")
         c.commit()
         # what AgentPG's default privileges do for every table
@@ -78,7 +78,7 @@ def ro_role():
 
 
 def _ro():
-    return psycopg.connect(make_conninfo(os.environ["TEST_DATABASE_URL"], user=LOGIN), row_factory=dict_row, autocommit=True)
+    return psycopg.connect(make_conninfo(os.environ["TEST_DATABASE_URL"], user=LOGIN, password="ro-pw-test"), row_factory=dict_row, autocommit=True)
 
 
 def _denied(ro, table):
