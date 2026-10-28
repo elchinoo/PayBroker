@@ -32,7 +32,7 @@ What it does:
    times of `narration.json`.
 5. It stops with an error if any scene is shorter than its narration + 0.7 s.
 
-Structure (problem first, about 6 minutes 50 seconds; story: *I am running payments and I have to prove that nobody changed a decision after the fact*):
+Structure (problem first, about 7 minutes 10 seconds; story: *I am running payments and I have to prove that nobody changed a decision after the fact*):
 1 the problem and the three-colour diagram (PLATFORM = EDB Postgres on AgentPG, REFERENCE SCAFFOLDING = sign-in, LLM gateway, secret vault: swappable and "not the point", SAMPLE APP = PayBroker; all said within the first 30 seconds),
 2 setup, demo traffic, merchant, 3 the shop's payments (authorize, capture, refund, a `NAME_MISMATCH` payment), 4 the audit ledger (Audit tab, chain, Verify: intact, `audit_verify_detail()`),
 5 the tamper (permission denied for the app role, the owner grants itself and is refused by the trigger, the owner switches the trigger off and edits one entry), 6 Verify names the first broken entry (tab and SQL),
@@ -41,9 +41,7 @@ Every SQL statement and result on screen is a real run; nothing is described ins
 
 Real versus captured: everything is a real run against the throwaway local Postgres. The app runs as an **ordinary owner role** (`pb_owner`, no superuser, no BYPASSRLS; `lib.ts`), because Postgres exempts superusers from row-level
 security. The recorder creates the `a1p_readonly` group role and the login `reporting_reader` before `paybroker migrate` (to mimic AgentPG) and the plain role `ai_agent` before scene 7. `sql` on screen is `psql "$DB"` with terse errors.
-The only non-local content are the two terminal cards in scene 9, which print the PayBroker blocks of `videos/live-captures/extensions-installed.txt` and `ecoctl-insights.txt` under the banner *CAPTURED from the live AgentPG fleet: not run in this
-video* (the instance id is dropped; the recorder fails if a block is missing). Those captures hold the extension list and `query_advisor`'s suggestions only: no `edb_stat_monitor` top queries and no `edb_pg_tuner` settings, so the video
-does not show them (it says the extensions are installed). The tamper leaves the take's ledger broken: the database is thrown away with the take.
+The only non-local content are three real screenshots of the live fleet's PayBroker Insights tab in scene 9 (`videos/live-captures/paybroker-insights-*-2026-10-28.jpg`: top queries, the masking statements recorded by `edb_stat_monitor`, tuner and advisor), shown full screen under the banner *CAPTURED from the live AgentPG fleet, 28 Oct 2026* with a slow zoom and highlight boxes; nothing is retyped. The tamper leaves the take's ledger broken: the database is thrown away with the take.
 
 Voice plan (one accent, US; male and female alternate by topic, never inside a scene; never `af_nicole`):
 

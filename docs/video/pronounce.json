@@ -14,5 +14,6 @@
  "pg_trgm": "P G trigram",
  "Smyth": "Smith",
  "Jon": "John",
- "SHA-256": "S H A two fifty-six"
+ "SHA-256": "S H A two fifty-six",
+ "pg_read_all_stats": "P G read all stats"
 }

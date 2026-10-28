@@ -154,20 +154,36 @@ But the masked view is allowed. Identifiers become hashes. Addresses lose the la
 
 Now, one real finding. When someone creates a new database user, grants on the base tables open again. So PayBroker re-asserts the masking every five minutes. Its status is public, here.
 
-[pause 2.5]
+[pause 2.0]
+
+Remember this. I will show it again, recorded by the platform itself.
 
 ## 9 am_michael
 The platform adds one more thing. Insights. On my laptop, plain Postgres shows only pg_stat_statements.
 
-On AgentPG, the instance also has edb_stat_monitor, edb_pg_tuner, and query_advisor. I cannot run them here. So this card is captured from our live AgentPG fleet.
+On AgentPG, the same page reads edb_stat_monitor, edb_pg_tuner, and query_advisor. These are real screenshots from the live fleet, 28 October.
 
-[pause 1.5]
+[pause 0.5]
 
-The PayBroker instance has all three, next to pgvector and fuzzystrmatch.
+First, edb_stat_monitor: the slowest statements.
 
-[pause 1.5]
+[pause 1.0]
 
-And query_advisor suggested two indexes and a statistics object. It only suggests. A person decides.
+Further down, the platform's own monitor recorded PayBroker re-asserting its masking. It revokes select on the base tables.
+
+[pause 0.5]
+
+And it creates a masked view again.
+
+[pause 1.0]
+
+Then edb_pg_tuner suggests memory settings.
+
+[pause 1.0]
+
+And query_advisor suggests indexes. It only suggests. A person decides.
+
+[pause 0.5]
 
 ## 10 af_heart
 So, the problem was proof. Nobody altered the record, and the database can show it.

@@ -225,6 +225,29 @@ const CARD_HTML = `<!doctype html><meta charset="utf-8"><title>card</title>
 </script>`;
 
 
+const STILL_HTML = `<!doctype html><meta charset="utf-8"><title>captured</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1220; overflow: hidden; font-family: system-ui, sans-serif; }
+  #bar { position: fixed; left: 0; right: 0; top: 0; height: 80px; display: flex; align-items: center; justify-content: center; gap: 24px; background: #0f1a2e; border-bottom: 2px solid #1e293b; font: 700 34px system-ui; }
+  .tg { padding: 6px 20px; border-radius: 10px; color: #0b1220; } .tg.cap { background: #fb923c; box-shadow: 0 0 0 4px rgba(251,146,60,.35); } .tg.platform { background: #38bdf8; }
+  #stage { position: absolute; left: 48px; top: 80px; width: 1824px; height: 1000px; overflow: hidden; background: #fff; }
+  #w { position: absolute; inset: 0; transform-origin: 50% 50%; } #w img { width: 100%; height: 100%; display: block; }
+  #box { position: absolute; border: 6px solid #f59e0b; border-radius: 8px; box-shadow: 0 0 0 9999px rgba(11,18,32,.28); opacity: 0; transition: opacity .4s; }
+</style><div id="bar"><span class="tg cap">CAPTURED from the live AgentPG fleet, 28 Oct 2026</span><span class="tg platform">PLATFORM: EDB extensions</span></div>
+<div id="stage"><div id="w"><img id="img" alt="captured screenshot"><div id="box"></div></div></div>
+<script>
+  // a shot: which capture, the zoom origin (% of the image), zoom from/to over ms, and a highlight box (% of the image: l, t, w, h)
+  window.__shot = (src, ox, oy, z0, z1, ms, box) => {
+    const img = document.getElementById('img'), w = document.getElementById('w'), b = document.getElementById('box');
+    if (!img.src.endsWith(src)) img.src = '/live/' + src;
+    w.style.transition = 'none'; w.style.transformOrigin = ox + '% ' + oy + '%'; w.style.transform = 'scale(' + z0 + ')';
+    void w.offsetWidth;
+    w.style.transition = 'transform ' + ms + 'ms linear'; w.style.transform = 'scale(' + z1 + ')';
+    if (box) { b.style.left = box[0] + '%'; b.style.top = box[1] + '%'; b.style.width = box[2] + '%'; b.style.height = box[3] + '%'; b.style.opacity = 1; } else b.style.opacity = 0;
+  };
+</script>`;
+const LIVE_STILLS = ['paybroker-insights-top-queries-2026-10-28.jpg', 'paybroker-insights-masking-sql-in-monitor-2026-10-28.jpg', 'paybroker-insights-tuner-advisor-2026-10-28.jpg'];
+
 const DIAGRAM_HTML = `<!doctype html><meta charset="utf-8"><title>diagram</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0b1220; color: #f8fafc; font-family: system-ui, sans-serif; overflow: hidden; }
@@ -275,6 +298,12 @@ function startStandIns(state: { secret: string; lines: string[] }) {
     } else if (url === '/diagram.html') {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(DIAGRAM_HTML);
+    } else if (url === '/still.html') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(STILL_HTML);
+    } else if (url.startsWith('/live/') && LIVE_STILLS.includes(url.slice(6))) {
+      res.writeHead(200, { 'content-type': 'image/jpeg' });
+      res.end(fs.readFileSync(path.join(LIVE, url.slice(6))));
     } else if (url === '/card.html') {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(CARD_HTML);
@@ -834,24 +863,34 @@ test('PayBroker tutorial video', async ({ page }) => {
     await term.mark(['"drift": [^\\n]*', '"ok": [^\\n]*']);
     await endScene(page);
 
-    // ---- scene 9: EDB tech from the live fleet (captured) -------------------------------------------------------------------------------
+    // ---- scene 9: EDB tech from the live fleet: real screenshots of the Insights tab, captured 28 Oct 2026 (not run in this video) ----------------
     begin(9);
+    const W = 1481, H = 812; // the screenshots' size; boxes below are read off them in pixels and converted to percent of the image
+    const pct = (x0: number, y0: number, x1: number, y1: number) => [(x0 / W) * 100, (y0 / H) * 100, ((x1 - x0) / W) * 100, ((y1 - y0) / H) * 100];
+    const shot = (img: string, ox: number, oy: number, z0: number, z1: number, ms: number, box?: number[]) =>
+      page.evaluate(([i, a, b, c, d, e, f]) => (window as any).__shot(i, a, b, c, d, e, f), [img, ox, oy, z0, z1, ms, box ?? null] as const);
+    const TOP = 'paybroker-insights-top-queries-2026-10-28.jpg', MASK = 'paybroker-insights-masking-sql-in-monitor-2026-10-28.jpg', TUNE = 'paybroker-insights-tuner-advisor-2026-10-28.jpg';
     await at(page, 'The platform adds one more thing', 0.2);
     await page.goto(PB + '/#insights');
     await expect(page.getByRole('heading', { name: 'Database insights' })).toBeVisible();
-    await page.waitForTimeout(1200);
     await callout(page, 'This laptop: pg_stat_statements only', 5);
-    await at(page, 'On AgentPG, the instance also has', 0.2);
-    await callout(page, 'On AgentPG: + edb_stat_monitor, edb_pg_tuner, query_advisor', 6);
-    await at(page, 'I cannot run them here', 0.2);
-    await term.fresh([{ cat: 'cap', text: 'CAPTURED from the live AgentPG fleet: not run in this video' }, { cat: 'platform', text: 'PLATFORM: EDB extensions' }]);
-    await term.run('agentpg extensions list $PAYBROKER_INSTANCE', async () => captured('extensions-installed.txt', 'paybroker'), 1.8);
-    await at(page, 'The PayBroker instance has all three', 0.2);
-    await term.mark(['edb_stat_monitor[^\\n]*', 'edb_pg_tuner[^\\n]*', 'query_advisor[^\\n]*', 'vector', 'fuzzystrmatch']);
-    await at(page, 'And query_advisor suggested', 0.2);
-    await term.unmark();
-    await term.run('ecoctl insights   # runs: agentpg recommend', async () => captured('ecoctl-insights.txt', 'paybroker'), 1.6);
-    await term.mark(['CREATE INDEX', 'CREATE STATISTICS']);
+    await page.waitForTimeout(1500);
+    for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 250); await pause(page, 700); }
+    await at(page, 'On AgentPG, the same page reads', 0.2);
+    await callout(page, 'On AgentPG: + edb_stat_monitor, edb_pg_tuner, query_advisor', 5.5);
+    await at(page, 'These are real screenshots', 0.2);
+    await page.goto(SHOP + '/still.html');
+    await shot(TOP, 50, 20, 1.0, 1.08, 8000);
+    await at(page, 'First, edb_stat_monitor', 0.2);
+    await shot(TOP, 40, 38, 1.0, 1.35, 7500, pct(255, 264, 870, 306));
+    await at(page, 'Further down', 0.3);
+    await shot(MASK, 35, 12, 1.0, 1.7, 8000, pct(270, 80, 700, 106));
+    await at(page, 'And it creates a masked view', 0.2);
+    await shot(MASK, 35, 26, 1.0, 1.7, 5500, pct(270, 160, 700, 262));
+    await at(page, 'Then edb_pg_tuner', 0.2);
+    await shot(TUNE, 40, 45, 1.0, 1.5, 6000, pct(264, 284, 1204, 425));
+    await at(page, 'And query_advisor suggests', 0.2);
+    await shot(TUNE, 45, 80, 1.0, 1.45, 8500, pct(264, 570, 1204, 712));
     await endScene(page);
 
     // ---- scene 10: close, and the legend again ------------------------------------------------------------------------------------------
