@@ -64,11 +64,15 @@ export interface Cluster {
   url: string;
   /** Same database as the login role `reporting_reader` (a member of a1p_readonly, like `agentpg db-users create --permission read`). */
   readerUrl: string;
+  /** The ordinary (non-superuser) owner the app runs as, like the one AgentPG gives an instance: row-level security binds it. */
+  ownerRole: string;
   port: number;
   dbName: string;
   bin: string;
   stop(): void;
 }
+
+const OWNER = 'pb_owner';
 
 export async function startCluster(dbName: string): Promise<Cluster> {
   if (!/^[a-z0-9_]*test$/.test(dbName)) throw new Error('the throwaway database name must end in "test"');
@@ -107,20 +111,24 @@ export async function startCluster(dbName: string): Promise<Cluster> {
         return false;
       }
     }, 30_000);
-    psql('postgres', `CREATE DATABASE ${dbName} ENCODING 'UTF8' TEMPLATE template0`);
-    for (const ext of ['vector', 'pg_trgm', 'pg_stat_statements']) psql(dbName, `CREATE EXTENSION IF NOT EXISTS ${ext}`);
+    // The app runs as an ORDINARY owner role (no SUPERUSER, no BYPASSRLS), as on AgentPG: Postgres exempts superusers from row-level
+    // security, so a superuser owner would make the policies on screen meaningless. `postgres` only sets the cluster up.
+    psql('postgres', `CREATE ROLE ${OWNER} LOGIN NOSUPERUSER NOBYPASSRLS`);
+    psql('postgres', `CREATE DATABASE ${dbName} ENCODING 'UTF8' TEMPLATE template0 OWNER ${OWNER}`);
+    for (const ext of ['vector', 'pg_trgm', 'pg_stat_statements', 'fuzzystrmatch']) psql(dbName, `CREATE EXTENSION IF NOT EXISTS ${ext}`);
+    psql('postgres', `GRANT pg_read_all_stats TO ${OWNER}`);
     // What AgentPG provides on every instance: the group role a1p_readonly (SELECT on new public tables by default) and a login
     // role that belongs to it. Created BEFORE `paybroker migrate`, whose after-migrate hook then takes the default away (hardening.py).
     psql('postgres', `CREATE ROLE a1p_readonly NOLOGIN`);
     psql('postgres', `CREATE ROLE reporting_reader LOGIN`);
     psql('postgres', `GRANT a1p_readonly TO reporting_reader`);
     psql(dbName, `GRANT USAGE ON SCHEMA public TO a1p_readonly`);
-    psql(dbName, `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO a1p_readonly`);
+    psql(dbName, `ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER} IN SCHEMA public GRANT SELECT ON TABLES TO a1p_readonly`);
   } catch (e) {
     stop();
     throw e;
   }
-  return { url: `postgresql://postgres@127.0.0.1:${port}/${dbName}`, readerUrl: `postgresql://reporting_reader@127.0.0.1:${port}/${dbName}`, port, dbName, bin, stop };
+  return { url: `postgresql://${OWNER}@127.0.0.1:${port}/${dbName}`, ownerRole: OWNER, readerUrl: `postgresql://reporting_reader@127.0.0.1:${port}/${dbName}`, port, dbName, bin, stop };
 }
 
 export interface Running {

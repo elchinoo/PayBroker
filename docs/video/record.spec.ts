@@ -235,7 +235,7 @@ const DIAGRAM_HTML = `<!doctype html><meta charset="utf-8"><title>diagram</title
   .platform { border-color: #38bdf8; background: rgba(56,189,248,.10); } .platform .tag, .sw.platform i { background: #38bdf8; }
   .app { border-color: #4ade80; background: rgba(74,222,128,.10); } .app .tag, .sw.app i { background: #4ade80; }
   .scaf { border-color: #fbbf24; background: rgba(251,191,36,.10); } .scaf .tag, .sw.scaf i { background: #fbbf24; }
-  h2 { font-size: 40px; margin: 0 0 8px; } p { font-size: 30px; margin: 6px 0; color: #cbd5e1; } .chip { font-size: 32px; margin: 12px 0; color: #e2e8f0; }
+  h2 { font-size: 40px; margin: 0 0 8px; } p { font-size: 30px; margin: 6px 0; color: #cbd5e1; } .chip { font-size: 30px; margin: 12px 0; color: #e2e8f0; }
   .arrow { position: absolute; height: 6px; background: #64748b; opacity: 0; transition: opacity .5s; } .arrow.show { opacity: 1; }
   #legend { position: absolute; left: 60px; right: 60px; top: 730px; display: flex; gap: 48px; align-items: center; opacity: 0; transition: opacity .5s; font-size: 28px; }
   #legend.show { opacity: 1; } .sw { display: flex; align-items: center; gap: 12px; } .sw i { width: 34px; height: 34px; border-radius: 8px; display: inline-block; }
@@ -243,19 +243,19 @@ const DIAGRAM_HTML = `<!doctype html><meta charset="utf-8"><title>diagram</title
   .cmd { position: absolute; left: 60px; right: 60px; font: 38px ui-monospace, Menlo, monospace; color: #e2e8f0; opacity: 0; transition: opacity .5s; } .cmd.show { opacity: 1; } .cmd em { color: #94a3b8; font-style: normal; font-size: 28px; }
 </style><div id="d">
   <div class="box platform" data-k="0" style="left:60px;top:90px;width:800px;height:600px"><span class="tag">PLATFORM</span><h2>Postgres on AgentPG (EDB)</h2>
-    <div class="chip">pgvector: nearest past fraud cases</div><div class="chip">fuzzystrmatch: name-mismatch check</div><div class="chip">read-only role + masked views</div><div class="chip">EDB insights: edb_stat_monitor, query_advisor</div></div>
+    <div class="chip">audit ledger: SHA-256 chain, same transaction</div><div class="chip">row-level security, forced</div><div class="chip">masked views for read-only roles</div><div class="chip">fuzzystrmatch: name-mismatch check</div><div class="chip">EDB insights: edb_stat_monitor, query_advisor</div></div>
   <div class="arrow" data-a="1" style="left:860px;top:386px;width:60px"></div>
   <div class="box app" data-k="1" style="left:920px;top:90px;width:430px;height:600px"><span class="tag">SAMPLE APP</span><h2>PayBroker</h2><p>fraud checks, routing, dashboard, API</p><p>test cards only</p></div>
   <div class="arrow" data-a="2" style="left:1350px;top:386px;width:60px"></div>
   <div class="box scaf" data-k="2" style="left:1410px;top:90px;width:450px;height:190px"><span class="tag">REFERENCE SCAFFOLDING</span><h2>Sign-in</h2><p>any OpenID Connect provider</p></div>
-  <div class="box scaf" data-k="3" style="left:1410px;top:300px;width:450px;height:190px"><span class="tag">REFERENCE SCAFFOLDING</span><h2>Model gateway</h2><p>OpenAI-compatible API</p></div>
+  <div class="box scaf" data-k="3" style="left:1410px;top:300px;width:450px;height:190px"><span class="tag">REFERENCE SCAFFOLDING</span><h2>LLM gateway</h2><p>OpenAI-compatible API</p></div>
   <div class="box scaf" data-k="4" style="left:1410px;top:510px;width:450px;height:180px"><span class="tag">REFERENCE SCAFFOLDING</span><h2>Secret vault</h2><p>shared-kit module</p></div>
   <div id="legend" data-k="6"><div class="sw platform"><i></i>PLATFORM: AgentPG and EDB Postgres</div><div class="sw scaf"><i></i>REFERENCE SCAFFOLDING: swappable</div><div class="sw app"><i></i>SAMPLE APP: PayBroker</div></div>
   <div id="note" data-k="5">Only test cards and simulated processors: nothing moves real money</div>
   <div class="cmd" data-k="7" style="top:810px">$ ecoctl apply --only paybroker --execute <em>   # on AgentPG</em></div>
   <div class="cmd" data-k="8" style="top:870px">$ docker compose up -d db <em>   # or locally, with Docker</em></div>
   <div class="cmd" data-k="9" style="top:930px">$ paybroker migrate &amp;&amp; paybroker serve</div>
-  <div class="cmd" data-k="10" style="top:995px;color:#4ade80">docs/GUIDE.md  <em>section 17: EDB and AgentPG capabilities</em></div>
+  <div class="cmd" data-k="10" style="top:995px;color:#4ade80">docs/GUIDE.md  <em>section 18: audit ledger and row-level security</em></div>
 </div>
 <script>
   window.__show = (n) => { const d = document.querySelector('[data-k="' + n + '"]'); if (d) d.classList.add('show'); if (n == 1) document.querySelector('[data-a="1"]').classList.add('show'); if (n >= 2 && n <= 4) document.querySelector('[data-a="2"]').classList.add('show'); };
@@ -317,6 +317,10 @@ async function authorize(sk: string, body: Record<string, unknown>): Promise<{ s
   const r = await fetch(PB + '/v1/payments/authorize', { method: 'POST', headers: { authorization: 'Bearer ' + sk, 'content-type': 'application/json' }, body: JSON.stringify({ currency: 'USD', ...body }) });
   return { status: r.status, json: await r.json() };
 }
+async function action(sk: string, paymentId: string, name: 'capture' | 'refund', body?: Record<string, unknown>): Promise<{ status: number; json: any }> {
+  const r = await fetch(`${PB}/v1/payments/${paymentId}/${name}`, { method: 'POST', headers: { authorization: 'Bearer ' + sk, 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+  return { status: r.status, json: await r.json() };
+}
 /** The curl-helper call as it would be typed: the first keys on one line, one key per line after that, the token swapped for a shell variable. */
 function shownAuth(body: Record<string, unknown>, tokenExpr: string): string {
   const e = Object.entries(body);
@@ -328,13 +332,15 @@ function shownAuth(body: Record<string, unknown>, tokenExpr: string): string {
 
 // ---- real database calls for the "under the hood" scenes ---------------------------------------------------------------------------
 /** Runs psql against the throwaway Postgres as `user` (the owner `postgres` or the read-only login role); returns what the terminal shows, errors included. */
-function psql(user: 'postgres' | 'reporting_reader', args: string[], input?: string): string {
+function psql(user: 'postgres' | 'pb_owner' | 'reporting_reader' | 'ai_agent', args: string[], input?: string, extraEnv: Record<string, string> = {}): string {
   const c = stack.cluster;
-  const r = spawnSync(path.join(c.bin, 'psql'), ['-X', '-h', '127.0.0.1', '-p', String(c.port), '-U', user, '-d', c.dbName, '-P', 'pager=off', ...args], { input, encoding: 'utf8', env: { PATH: `${c.bin}:/usr/bin:/bin`, LC_ALL: 'C' } });
+  const r = spawnSync(path.join(c.bin, 'psql'), ['-X', '-h', '127.0.0.1', '-p', String(c.port), '-U', user, '-d', c.dbName, '-P', 'pager=off', '-v', 'VERBOSITY=terse', ...args], { input, encoding: 'utf8', env: { PATH: `${c.bin}:/usr/bin:/bin`, LC_ALL: 'C', ...extraEnv } });
   return `${r.stdout ?? ''}${r.stderr ?? ''}`.replace(/\s+$/, '');
 }
-/** The same text the terminal shows is the text that runs: `$DB` / `$RO` stand for the connection strings (they hold no password). */
-const owner = (sql: string) => psql('postgres', ['-c', sql]);
+/** The same text the terminal shows is the text that runs: `sql` / `$DB` are the app's owner role (an ordinary role, not a superuser), `$RO` the read-only login. None holds a password. */
+const ownerSql = (sql: string, extra: string[] = []) => psql('pb_owner', [...extra, '-c', sql]);
+/** What the app's own connection does for the operator dashboard: `app.bypass = on` (see row-level security). */
+const ownerSqlBypass = (sql: string, extra: string[] = []) => psql('pb_owner', [...extra, '-c', sql], undefined, { PGOPTIONS: '-c app.bypass=on' });
 const reader = (sql: string) => psql('reporting_reader', ['-c', sql]);
 const LIVE = path.resolve(__dirname, '..', '..', '..', 'videos', 'live-captures');
 /** One instance's block of a capture file (`# name (id): command` blocks, or `name (id)` blocks); the instance id is dropped from the heading. */
@@ -413,514 +419,458 @@ test('PayBroker tutorial video', async ({ page }) => {
   const detail = page.locator('#detail');
 
   try {
-    // ---- scene 1: the problem, then what is platform, sample app and scaffolding ---------------------------------------------
+    // ---- scene 1: the problem, then what is platform, sample app and scaffolding (swappable) ----------------------------------
     begin(1);
-    await card('A marketplace taking cards', 'I run a marketplace', [
-      { text: 'Card fraud costs me money', cls: 'bad' }, { text: 'False declines cost me sales', cls: 'bad' }, { text: 'My payment data goes to three vendors', cls: 'bad' },
+    await card('Prove nobody altered the record', 'I am running payments', [
+      { text: 'A decision must never change after the fact', cls: 'q' }, { text: 'Not by an engineer', cls: 'bad' }, { text: 'Not by a database admin', cls: 'bad' }, { text: 'Not by me', cls: 'bad' },
     ]);
-    await at(page, 'Card fraud and false declines', 0.2);
+    await at(page, 'And I have to prove', 0.2);
     await show(0);
-    await pause(page, 1300);
+    await at(page, 'Not my engineers', 0.2);
     await show(1);
-    await at(page, 'And I will not ship', 0.2);
+    await at(page, 'Not my database admin', 0.2);
     await show(2);
-    await at(page, 'So here is how Postgres on AgentPG', 0.2);
+    await at(page, 'Not me.', 0.2);
+    await show(3);
+    await at(page, 'Here is how EDB Postgres', 0.3);
     await page.goto(SHOP + '/diagram.html');
     await show(6);
     await show(0);
-    await at(page, 'PayBroker is the sample app', 0.3);
+    await at(page, 'This platform does the work', 0.2);
+    await hot(0);
+    await at(page, 'PayBroker is only a sample app', 0.3);
     await show(1);
-    await at(page, 'Three things here are scaffolding', 0.3);
+    await hot(1);
+    await at(page, 'Sign-in, the LLM gateway', 0.3);
     await show(2);
-    await pause(page, 700);
+    await pause(page, 600);
     await show(3);
-    await pause(page, 700);
+    await pause(page, 600);
     await show(4);
-    await at(page, 'Sign-in speaks standard', 0.2);
-    await hot(2);
-    await at(page, 'The gateway speaks', 0.2);
-    await hot(3);
-    await at(page, 'The vault is a small module', 0.2);
-    await hot(4);
-    await at(page, 'It uses only test cards', 0.2);
+    await hot(2, 3, 4);
+    await at(page, 'They are swappable', 0.2);
+    await at(page, 'It uses test cards only', 0.2);
     await hot();
     await show(5);
     await endScene(page);
 
-    // ---- scene 2: setup and demo traffic -------------------------------------------------------------------------------------
+    // ---- scene 2: setup, demo traffic (each decision goes into the ledger), a merchant -----------------------------------------
     begin(2);
-    await at(page, 'First, setup', 0.1);
+    await at(page, 'First, a quick setup', 0.1);
     await page.goto(PB + '/');
     await expect(page.getByRole('heading', { name: 'Set up PayBroker' })).toBeVisible();
-    await callout(page, 'One-time setup code from the server log', 3.0);
-    await type(page, page.locator('#setup-code'), stack.setupCode, 25);
-    await type(page, page.locator('#setup-pw'), adminPassword, 12);
-    await type(page, page.locator('#setup-pw2'), adminPassword, 12);
+    await callout(page, 'One-time setup code from the server log', 2.4);
+    await type(page, page.locator('#setup-code'), stack.setupCode, 12);
+    await type(page, page.locator('#setup-pw'), adminPassword, 6);
+    await type(page, page.locator('#setup-pw2'), adminPassword, 6);
     await click(page, page.getByRole('button', { name: 'Create admin password' }), 300);
     await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
     const demoBtn = page.getByRole('button', { name: 'Generate 120 demo payments' });
     await expect(demoBtn).toBeVisible();
-    await at(page, 'Now the dashboard', 0.1);
-    await callout(page, 'Empty overview: no payments yet', 2.6);
-    await at(page, 'One click loads', 0.2);
+    await at(page, 'One click sends', 0.3);
     const offBtn = await hl(demoBtn);
-    await callout(page, '120 fictional payments: honest ones and fraud attempts', 4.2);
     await glide(page, demoBtn);
-    await at(page, 'I click, and each payment', 0.2);
+    await at(page, 'Each one is scored', 0.2);
     await offBtn();
     await demoBtn.click();
+    await callout(page, 'Every decision is also written to the audit ledger', 3.2);
     const waitStart = Date.now();
     await expect(page.locator('#toast')).toContainText('Sent 120 demo payments', { timeout: 90_000 });
     await expect(page.getByRole('heading', { name: 'Fraud score distribution' })).toBeVisible({ timeout: 30_000 });
     console.log(`demo traffic took ${((Date.now() - waitStart) / 1000).toFixed(1)} s`);
     await at(page, 'Done.', 0.2);
-    await spot(page, page.locator('a.stat', { hasText: 'approved' }).first(), 1800);
-    await callout(page, 'under 300 approve | 300-699 verify | 700+ decline', 8);
-    await at(page, 'Under three hundred', 0.2);
-    await spot(page, page.locator('.card', { has: page.getByRole('heading', { name: 'Fraud score distribution' }) }), 6000);
-    await endScene(page);
-
-    // ---- scene 3: merchant, keys, origin, webhook -----------------------------------------------------------------
-    begin(3);
-    await at(page, 'Next, a shop', 0.2);
     await page.goto(PB + '/#merchants');
-    await at(page, 'I create a merchant called', 0.2);
-    await click(page, page.getByRole('button', { name: 'New merchant' }), 200);
-    await type(page, page.getByLabel('Name'), 'Acme Shop', 25);
+    await at(page, 'I create Acme Shop', 0.3);
+    await click(page, page.getByRole('button', { name: 'New merchant' }), 100);
+    await type(page, page.getByLabel('Name'), 'Acme Shop', 15);
     await click(page, page.getByRole('button', { name: 'Create', exact: true }), 200);
     await expect(detail.getByRole('heading', { name: 'Acme Shop' })).toBeVisible();
-    await at(page, 'The secret key stays', 0.3);
-    await callout(page, 'Secret key: server only', 3.0);
     await detail.locator('#key-kind').selectOption('secret');
-    await type(page, detail.locator('#key-name'), 'checkout server', 20);
+    await type(page, detail.locator('#key-name'), 'checkout server', 10);
     await click(page, detail.getByRole('button', { name: 'Create key' }), 100);
     let code = detail.locator('.codewrap code').last();
     await expect(code).toContainText('sk_test_');
     sk = (await code.innerText()).trim();
-    await at(page, 'Each key is shown once', 0.2);
-    await callout(page, 'Shown once', 2.4);
-    await pause(page, 700);
     await mask(detail.locator('.codewrap code'));
-    await at(page, 'The publishable key can only', 0.4);
-    await callout(page, 'Publishable key: browser safe', 3.0);
+    await at(page, 'Then a publishable key', 0.3);
     await detail.locator('#key-kind').selectOption('publishable');
-    await type(page, detail.locator('#key-name'), 'checkout page', 20);
+    await type(page, detail.locator('#key-name'), 'checkout page', 10);
     await click(page, detail.getByRole('button', { name: 'Create key' }), 100);
     code = detail.locator('.codewrap code').last();
     await expect(code).toContainText('pk_test_');
     pk = (await code.innerText()).trim();
-    await pause(page, 600);
-    await mask(detail.locator('.codewrap code'));
-    await at(page, 'Then the allowed browser origin', 0.3);
-    await type(page, detail.getByLabel('Allowed browser origins'), SHOP, 8);
-    await click(page, detail.getByRole('button', { name: 'Save origins' }), 100);
-    await expect(page.locator('#toast')).toContainText('Allowed origins saved');
-    await callout(page, 'Allowed origin: only this site may call from a browser', 2.8);
-    await type(page, detail.locator('#wh-url'), `http://127.0.0.1:${HOOK_PORT}/hook`, 8);
-    await at(page, 'The webhook signing secret', 0.2);
-    await click(page, detail.getByRole('button', { name: 'Save', exact: true }), 100);
-    code = detail.locator('.codewrap code').last();
-    await expect(code).toContainText('whsec_');
-    await code.scrollIntoViewIfNeeded(); // the secret appears in the keys block at the top of the window: scroll back to it (blurred)
-    hooks.secret = (await code.innerText()).trim();
-    await callout(page, 'Signing secret: shown once', 2.6);
-    await pause(page, 1200);
+    await at(page, 'Each key is shown once', 0.2);
+    await callout(page, 'Shown once, then hidden', 2.6);
+    await pause(page, 500);
     await mask(detail.locator('.codewrap code'));
     await endScene(page);
 
-    // ---- scene 4: tokenize and authorize, twice ---------------------------------------------------------------------
-    const card4242 = await tokenize(pk, '4242424242424242');
+    // ---- scene 3: Acme Shop's payments from the terminal: authorize, capture, refund, and a name mismatch ----------------------
+    const cardOk = await tokenize(pk, '4242424242424242');
     const body1001 = {
-      idempotency_key: 'order-1001', amount: 4999, currency: 'USD', payment_method: { type: 'card', card_token: card4242 },
+      idempotency_key: 'order-1001', amount: 4999, currency: 'USD', capture_method: 'manual', payment_method: { type: 'card', card_token: cardOk },
       customer: customer('cus_42', 'pat@example.com', '198.51.100.20'),
       telemetry: { device_fingerprint: 'dev_abc', checkout_duration_ms: 41000, pasted_card_number: false }, shipping_address: { country: 'US' },
     };
-    begin(4);
-    await at(page, 'Now a payment', 0.2);
-    await term.fresh([{ cat: 'app', text: 'SAMPLE APP: the shop calls PayBroker' }]);
-    await callout(page, 'Token, not card number', 3);
-    await term.run('TOKEN=$(tok 4242424242424242); echo $TOKEN', async () => card4242, 1.6);
-    await at(page, "So the shop's server never sees", 0.2);
-    await term.mark(['tok_vault_card_\\w+']);
-    await at(page, 'The server then authorizes', 0.2);
-    await term.unmark();
-    let first!: { status: number; json: any };
-    await term.run(shownAuth(body1001, '$TOKEN'), async () => {
-      first = await authorize(sk, body1001);
-      expect(first.status).toBe(200);
-      expect(first.json.status).toBe('AUTHORIZED');
-      ids['1001'] = first.json.payment_id;
-      return JSON.stringify(first.json, null, 2);
-    }, 2.6);
-    await term.mark(['"idempotency_key":"order-1001"']);
-    await at(page, 'The answer says authorized', 0.2);
-    await term.unmark();
-    await term.mark(['"status": "AUTHORIZED"', '"score": \\d+', '"psp_name": "[^"]+"']);
-    await at(page, 'Now suppose the network', 0.2);
-    await callout(page, 'Same idempotency key = same payment', 6);
-    await term.unmark();
-    await term.run(shownAuth(body1001, '$TOKEN'), async () => {
-      const again = await authorize(sk, body1001);
-      expect(again.json.payment_id).toBe(first.json.payment_id);
-      return JSON.stringify(again.json, null, 2);
-    }, 2.0);
-    await at(page, 'It gets the same payment back', 0.2);
-    await callout(page, `Same payment_id as before: ${ids['1001']}`, 5);
-    await term.mark(['"payment_id": "[^"]+"']);
-    await endScene(page);
-
-    // ---- scene 5: the payment in the dashboard ----------------------------------------------------------------------
-    begin(5);
-    await at(page, 'In the dashboard', 0.2);
-    await openPayment(ids['1001'], 15);
-    await callout(page, 'Score 0-1000', 3);
-    const offScore = await hl(detail.getByRole('heading', { name: /Fraud engine:/ }));
-    await at(page, 'Below, the checks', 0.2);
-    await offScore();
-    await callout(page, 'Rules + model + routing, explained', 4);
-    const offT = await hl(detail.getByRole('heading', { name: 'Timing' }));
-    await at(page, 'And last, the processor', 0.2);
-    await offT();
-    await spot(page, detail.getByRole('heading', { name: 'Routing' }), 2400);
-    await click(page, page.locator('#detail-close'), 200);
-    await endScene(page);
-
-    // ---- scene 6: card declined, 3-D Secure, cascade -----------------------------------------------------------------
-    begin(6);
-    const call = async (key: string, number: string, who: ReturnType<typeof customer>, extra: Record<string, unknown> = {}) => {
-      const tok = await tokenize(pk, number);
-      const body = { idempotency_key: key, amount: 4999, currency: 'USD', payment_method: { type: 'card', card_token: tok }, customer: who, ...extra };
-      return { body, shown: shownAuth(body, `$(tok ${number})`), run: () => authorize(sk, body) };
-    };
-    const a = await call('order-1002', CARD_DECLINES, customer('cus_43', 'lee@example.com', '198.51.100.21'));
-    const b = await call('order-1003', CARD_3DS, customer('cus_44', 'kim@example.com', '198.51.100.22'), { return_url: SHOP + '/return.html' });
-    const c = await call('order-1004', CARD_CASCADE, customer('cus_45', 'sam@example.com', '198.51.100.23'));
-    await at(page, 'Now, test cards', 0.2);
-    await term.show();
-    await at(page, 'The first one makes', 0.2);
-    await callout(page, '402: bank declined', 5);
-    await term.run(a.shown, async () => {
-      const r = await a.run();
-      expect(r.status, JSON.stringify(r.json)).toBe(402);
-      expect(r.json.error.code).toBe('CARD_DECLINED');
-      return `HTTP ${r.status}\n` + JSON.stringify(r.json, null, 2);
-    }, 2.0);
-    await at(page, 'Four oh two', 0.2);
-    await term.mark(['HTTP 402', '"code": "CARD_DECLINED"']);
-    await at(page, 'The second card demands', 0.2);
-    await term.unmark();
-    await callout(page, '3-D Secure: verify the customer', 6);
-    let redirect = '';
-    await term.run(b.shown, async () => {
-      const r = await b.run();
-      expect(r.status).toBe(200);
-      expect(r.json.status).toBe('REQUIRES_ACTION');
-      redirect = r.json.action_required.redirect_url;
-      expect(redirect).toContain('/3ds/');
-      return JSON.stringify(r.json, null, 2);
-    }, 2.0);
-    await at(page, 'The answer holds a page', 0.2);
-    await term.mark(['"status": "REQUIRES_ACTION"', '"redirect_url": "[^"]+"']);
-    await at(page, 'I open it, and approve', 0.3);
-    await page.goto(redirect);
-    await expect(page.getByRole('heading', { name: 'Verify this payment' })).toBeVisible();
-    await pause(page, 400);
-    await click(page, page.getByRole('button', { name: 'Approve (verification succeeds)' }), 200);
-    await page.waitForURL(new RegExp(`^${SHOP.replace(/[.]/g, '\\.')}/return\\.html\\?payment_id=.*signature=`));
-    await expect(page.getByRole('heading', { name: 'Back at Acme Shop' })).toBeVisible();
-    await at(page, 'The customer is back', 0.3);
-    await callout(page, 'Signed link: the shop can verify it', 3.4);
-    await hl(page.locator('#u'));
-    await at(page, 'The third card', 0.2);
-    await term.show();
-    await callout(page, 'Cascade: processor 1 failed, processor 2 approved', 6);
-    await term.run(c.shown, async () => {
-      const r = await c.run();
-      expect(r.status).toBe(200);
-      ids['1004'] = r.json.payment_id;
-      return JSON.stringify(r.json, null, 2);
-    }, 2.0);
-    await at(page, 'PayBroker tries the next', 0.2);
-    await openPayment(ids['1004'], 15);
-    const routing = detail.locator('ol.timeline');
-    await expect(routing).toContainText('error');
-    await expect(routing).toContainText('approved');
-    await at(page, 'The routing shows an error', 0.4);
-    await spot(page, routing, 2600);
-    await click(page, page.locator('#detail-close'), 200);
-    await endScene(page);
-
-    // ---- scene 7: the risky payment and the case -------------------------------------------------------------------
-    begin(7);
-    const tokRisky = await tokenize(pk, '5555555555554444');
-    const risky = {
-      idempotency_key: 'order-risky-1', amount: 450000, currency: 'USD', payment_method: { type: 'card', card_token: tokRisky },
-      customer: { id: 'cus_risky', email: 'x@example.com', ip_address: '203.0.113.9', account_age_hours: 1 },
-      telemetry: { device_fingerprint: 'dev_risky_z', checkout_duration_ms: 900, pasted_card_number: true }, shipping_address: { country: 'NG' },
-    };
-    await at(page, 'Now, the payment my marketplace fears', 0.2);
-    await term.show();
-    await callout(page, 'A brand-new account, a fast checkout, a pasted card, a large basket', 5);
-    await atEnd(page, 'A brand-new account');
-    let rr!: { status: number; json: any };
-    await term.run(shownAuth(risky, '$(tok 5555555555554444)'), async () => {
-      rr = await authorize(sk, risky);
-      expect(rr.status).toBe(403);
-      expect(rr.json.error.code).toBe('FRAUD_REJECTED');
-      expect(rr.json.error.fraud_assessment.reasons).toContain('NEW_ACCOUNT');
-      ids.risky = rr.json.error.payment_id;
-      return `HTTP ${rr.status}\n` + JSON.stringify(rr.json, null, 2);
-    }, 1.8);
-    await at(page, 'Four oh three', 0.2);
-    await callout(page, '403: rejected before any processor', 4);
-    await term.mark(['HTTP 403', '"code": "FRAUD_REJECTED"', '"score": \\d+']);
-    await at(page, 'A case opens', 0.2);
-    await page.goto(PB + '/#cases');
-    const item = page.locator('#case-list .case', { hasText: ids.risky });
-    await expect(item).toBeVisible();
-    await expect(item).toContainText('NEW_ACCOUNT');
-    const offItem = await hl(item);
-    await at(page, 'The summary comes from', 0.3);
-    await offItem();
-    await glide(page, item.getByRole('button', { name: ids.risky }));
-    await item.getByRole('button', { name: ids.risky }).click();
-    await expect(detail).toContainText('rule-based fallback');
-    const offAi = await hl(detail.locator('.ai-box'));
-    await at(page, 'The AI only advises', 0.2);
-    await callout(page, 'AI advises, a person decides', 3);
-    await offAi();
-    const decision = detail.getByLabel('Decision');
-    await glide(page, decision);
-    await at(page, 'I choose permanent block', 0.2);
-    await decision.selectOption('PERMANENT_BLOCK');
-    await pause(page, 300);
-    await click(page, detail.getByRole('button', { name: 'Resolve' }), 200);
-    await expect(page.getByRole('alertdialog')).toBeVisible();
-    await pause(page, 400);
-    await click(page, page.getByRole('alertdialog').getByRole('button', { name: 'Block' }), 200);
-    await expect(page.locator('#toast')).toContainText('Resolved. Blocked:');
-    await callout(page, 'Blocked: device, ip, card', 3.4);
-    await endScene(page);
-
-    // ---- scene 8: signed webhooks -------------------------------------------------------------------------------------
-    begin(8);
-    const want = ['payment.authorized', 'payment.requires_action', 'payment.declined'];
-    const deadline = Date.now() + 120_000;
-    while (!want.every((t) => hooks.lines.some((l) => l.endsWith(t))) && Date.now() < deadline) await page.waitForTimeout(1000);
-    for (const t of want) expect(hooks.lines).toContain('signature ok   ' + t);
-    expect(hooks.lines.filter((l) => l.startsWith('SIGNATURE BAD'))).toHaveLength(0);
-    await at(page, 'The shop also needs', 0.2);
-    if (await detail.isVisible()) await click(page, page.locator('#detail-close'), 200);
-    await page.goto(PB + '/#merchants');
-    await click(page, page.locator('#view-merchants tbody tr', { hasText: 'Acme Shop' }), 200);
-    const offUrl = await hl(detail.locator('#wh-url'));
-    await at(page, "Here is the shop's receiver", 0.2);
-    await offUrl();
-    await term.fresh([{ cat: 'app', text: 'SAMPLE APP: the shop\'s webhook receiver' }]);
-    await callout(page, 'Signed events: HMAC-SHA256', 3);
-    await term.run('WHSEC=whsec_********** python3 receiver.py', async () => [...new Set(hooks.lines)].join('\n'), 1.4);
-    await at(page, 'It checks every signature', 0.2);
-    await term.mark(['signature ok']);
-    await at(page, 'On the merchant', 0.2);
-    await page.goto(PB + '/#merchants');
-    await click(page, page.locator('#view-merchants tbody tr', { hasText: 'Acme Shop' }), 200);
-    const ev = detail.getByRole('region', { name: 'Recent webhook events' });
-    await expect(ev).toContainText('delivered');
-    const offEv = await hl(ev);
-    await at(page, 'If the shop is down', 0.2);
-    await callout(page, 'Retries with back-off', 3.4);
-    await pause(page, 2400);
-    await offEv();
-    await endScene(page);
-
-    // ---- scene 9: under the hood, nearest past cases (pgvector, HNSW) ---------------------------------------------------
-    begin(9);
-    const txId = psql('postgres', ['-At', '-c', `SELECT id FROM transaction WHERE payment_id = '${ids.risky}'`]);
-    const vec = psql('postgres', ['-At', '-c', `SELECT feature_vector FROM fraud_assessment WHERE transaction_id = '${txId}'`]);
-    expect(vec).toMatch(/^\[[-0-9.e, ]+\]$/);
-    expect(vec.split(',').length).toBe(17);
-    await at(page, 'Now, under the hood', 0.2);
-    if (await detail.isVisible()) await click(page, page.locator('#detail-close'), 200);
-    await page.goto(PB + '/#cases');
-    await callout(page, 'Have we seen payments like this one before?', 6);
-    await at(page, 'Postgres answers it', 0.3);
-    await term.fresh([{ cat: 'platform', text: 'PLATFORM: pgvector on Postgres' }, { cat: 'app', text: 'SAMPLE APP: the query and the data' }]);
-    const dimsSql = `SELECT vector_dims(feature_vector) AS dims, left(feature_vector::text, 54) || '...' AS feature_vector FROM fraud_assessment LIMIT 1`;
-    await term.run(`psql "$DB" -c "${dimsSql}"`, async () => owner(dimsSql), 2.0);
-    await at(page, 'This index finds', 0.2);
-    const idxSql = `SELECT indexdef FROM pg_indexes WHERE indexname = 'fa_vec_idx'`;
-    await term.run(`psql "$DB" -At -c "${idxSql}"`, async () => psql('postgres', ['-At', '-c', idxSql]), 1.6);
-    await term.mark(['hnsw', 'vector_cosine_ops']);
-    await at(page, 'And here is the real query', 0.2);
-    await term.unmark();
-    const nearest = `SELECT t.payment_id, fa.tier2_ml_score AS score, fc.analyst_decision,
-       fa.tier3_llm_analysis->>'risk_category' AS category,
-       round((1 - (fa.feature_vector <=> :'v'))::numeric, 3) AS similarity
-FROM fraud_assessment fa JOIN transaction t ON t.id = fa.transaction_id
-LEFT JOIN fraud_case fc ON fc.transaction_id = fa.transaction_id
-WHERE fa.transaction_id <> :'tx' AND fa.tier2_ml_score >= 500 AND fa.feature_vector IS NOT NULL
-ORDER BY fa.feature_vector <=> :'v' LIMIT 5;`;
-    await term.run(`psql "$DB" -v v="$VEC" -v tx="$TX" <<'SQL'\n${nearest}\nSQL`, async () => {
-      const out = psql('postgres', ['-v', `v=${vec}`, '-v', `tx=${txId}`], nearest);
-      expect(out).toContain('(5 rows)');
-      return out;
-    }, 3.2);
-    await term.mark(['<=>', 'hnsw']);
-    await at(page, 'Each row shows', 0.2);
-    await term.unmark();
-    await term.mark(['similarity', 'analyst_decision']);
-    await at(page, 'Those five go to the triage', 0.2);
-    await callout(page, 'Nearest flagged cases go to the AI triage', 4);
-    await endScene(page);
-
-    // ---- scene 10: fuzzystrmatch, the NAME_MISMATCH signal ---------------------------------------------------------------
-    begin(10);
-    await at(page, 'Next problem', 0.2);
-    await term.fresh([{ cat: 'platform', text: 'PLATFORM: fuzzystrmatch extension' }, { cat: 'app', text: 'SAMPLE APP: the signal and the rule' }]);
-    await callout(page, 'Does the cardholder name match the account name?', 6);
-    await at(page, 'Here are two real calls', 0.2);
-    const fuzzSql = `SELECT levenshtein('smith', 'smyth') AS edits, dmetaphone('smith') = dmetaphone('smyth') AS sound_alike, soundex('john') = soundex('jon') AS soundex_same`;
-    await term.run(`psql "$DB" -c "${fuzzSql}"`, async () => {
-      const out = owner(fuzzSql);
-      expect(out).toMatch(/\n\s*1 \| t\s+\| t/);
-      return out;
-    }, 2.4);
-    await at(page, 'Smith and Smyth are one letter', 0.2);
-    await term.mark(['levenshtein', 'edits']);
     const tokName = await tokenize(pk, '4242424242424242');
     const bodyName = {
       idempotency_key: 'order-name-1', amount: 34900, currency: 'USD', payment_method: { type: 'card', card_token: tokName, cardholder_name: 'Jon Smith' },
       customer: { ...customer('cus_77', 'peter@example.com', '198.51.100.30'), name: 'Peter Wong' },
     };
-    await at(page, 'The card says Jon Smith', 0.3);
+    begin(3);
+    await at(page, 'Now Acme Shop takes a payment', 0.3);
+    await term.fresh([{ cat: 'app', text: 'SAMPLE APP: the shop calls PayBroker' }]);
+    await term.run('TOKEN=$(tok 4242424242424242); echo $TOKEN', async () => cardOk, 1.2);
+    await term.mark(['tok_vault_card_\\w+']);
+    await callout(page, 'A token, not the card number', 3.4);
+    await at(page, 'The server authorizes', 0.2);
+    let first!: { status: number; json: any };
+    await term.run(shownAuth(body1001, '$TOKEN').replace(/\| jq$/, "| jq '{status, payment_id, score: .fraud_assessment.score}'"), async () => {
+      first = await authorize(sk, body1001);
+      expect(first.status).toBe(200);
+      expect(first.json.status).toBe('AUTHORIZED');
+      ids['1001'] = first.json.payment_id;
+      return JSON.stringify({ status: first.json.status, payment_id: first.json.payment_id, score: first.json.fraud_assessment.score }, null, 2);
+    }, 1.8);
+    await term.mark(['"status": "AUTHORIZED"', '"score": \\d+']);
+    await callout(page, 'Authorized, with a fraud score out of 1000', 3.4);
+    await at(page, 'Then it captures', 0.2);
     await term.unmark();
-    const nameFilter = '{status, reasons: .fraud_assessment.reasons, action_required}';
-    const shownName = shownAuth(bodyName, '$(tok 4242424242424242)').replace(/\| jq$/, `| jq '${nameFilter}'`);
+    await term.run(`capture ${ids['1001']} | jq '{status, amount_captured}'`, async () => {
+      const r = await action(sk, ids['1001'], 'capture');
+      expect(r.status).toBe(200);
+      expect(r.json.amount_captured).toBe(4999);
+      return JSON.stringify({ status: r.json.status, amount_captured: r.json.amount_captured }, null, 2);
+    }, 1.2);
+    await term.mark(['"amount_captured": \\d+']);
+    await callout(page, 'Captured: 49.99', 2.6);
+    await at(page, 'And refunds ten dollars', 0.2);
+    await term.run(`refund ${ids['1001']} '{"amount":1000}' | jq '{status, amount_refunded}'`, async () => {
+      const r = await action(sk, ids['1001'], 'refund', { amount: 1000 });
+      expect(r.status).toBe(200);
+      expect(r.json.amount_refunded).toBe(1000);
+      return JSON.stringify({ status: r.json.status, amount_refunded: r.json.amount_refunded }, null, 2);
+    }, 1.2);
+    await term.mark(['"amount_refunded": \\d+']);
+    await callout(page, 'Refunded: 10.00', 2.6);
+    await at(page, 'The card says Jon Smith', 0.2);
+    await term.fresh([{ cat: 'platform', text: 'PLATFORM: fuzzystrmatch extension' }, { cat: 'app', text: 'SAMPLE APP: the shop calls PayBroker' }]);
+    await callout(page, 'Card says Jon Smith, account says Peter Wong', 4.5);
+    const nameFilter = '{status, reasons: .fraud_assessment.reasons}';
     let nm!: { status: number; json: any };
-    await term.run(shownName, async () => {
+    await term.run(shownAuth(bodyName, '$(tok 4242424242424242)').replace(/\| jq$/, `| jq '${nameFilter}'`), async () => {
       nm = await authorize(sk, bodyName);
       expect(nm.status, JSON.stringify(nm.json)).toBe(200);
       const reasons: string[] = nm.json.fraud_assessment?.reasons ?? [];
       expect(reasons).toContain('NAME_MISMATCH');
       ids.name = nm.json.payment_id;
-      const o = nm.json;
-      return JSON.stringify({ status: o.status, reasons, action_required: o.action_required ? { type: o.action_required.type, redirect_url: '...' } : null }, null, 2);
-    }, 3.0);
-    await at(page, 'The reason code is name mismatch', 0.2);
-    await callout(page, 'NAME_MISMATCH: reason code', 4);
+      return JSON.stringify({ status: nm.json.status, reasons }, null, 2);
+    }, 2.2);
+    await at(page, 'Postgres compares the names', 0.2);
     await term.mark(['"NAME_MISMATCH"', '"status": "[A-Z_]+"']);
-    await at(page, 'In the dashboard', 0.2);
-    await openPayment(ids.name, 15);
-    const nmEl = detail.getByText('NAME_MISMATCH').first();
-    await expect(nmEl).toBeVisible();
-    await spot(page, nmEl, 2600);
-    await click(page, page.locator('#detail-close'), 200);
+    await callout(page, 'NAME_MISMATCH: reason code from fuzzystrmatch', 4.5);
     await endScene(page);
 
-    // ---- scene 11: the four built-in rules ---------------------------------------------------------------------------------
-    begin(11);
-    await at(page, 'That step came', 0.2);
-    await page.goto(PB + '/#rules');
-    await expect(page.getByRole('heading', { name: 'Add a rule' })).toBeVisible();
-    await at(page, 'There are four built-in', 0.2);
-    await callout(page, 'Four built-in rules', 3.4);
-    const offRules = await hl(page.locator('#view-rules table').first());
-    await expect(page.locator('#view-rules')).toContainText('name_mismatch_large_basket');
-    await at(page, 'The new one asks', 0.2);
-    await offRules();
-    await spot(page, page.locator('#view-rules tr', { hasText: 'name_mismatch_large_basket' }).first(), 4000);
-    await at(page, 'Rules are plain data', 0.2);
-    await spot(page, page.locator('#rule-def'), 4000);
-    await endScene(page);
-
-    // ---- scene 12: masking for the read-only role ------------------------------------------------------------------------------
-    begin(12);
-    const ownerSql = (t: string) => `SELECT payment_id, customer_id, request->>'ip' AS ip FROM ${t} ORDER BY created_at DESC LIMIT 3`;
-    await at(page, 'Next problem', 0.2);
-    await term.fresh([{ cat: 'platform', text: 'PLATFORM: a1p_readonly role (db-users --permission read)' }, { cat: 'app', text: 'SAMPLE APP: masked views' }]);
-    await callout(page, 'Who can read the customer data?', 6);
-    await at(page, "Here is the app's own connection", 0.2);
-    await term.run(`psql "$DB" -c "${ownerSql('transaction')}"`, async () => {
-      const out = owner(ownerSql('transaction'));
-      expect(out).toContain('cus_');
-      return out;
-    }, 2.4);
-    await at(page, 'It sees the real customer id', 0.2);
-    await term.mark(['cus_\\w+', '\\d+\\.\\d+\\.\\d+\\.\\d+']);
-    await at(page, 'Now the read-only role', 0.2);
+    // ---- scene 4: the audit ledger: Audit tab, Verify, and the same check in SQL -------------------------------------------------
+    begin(4);
+    await at(page, 'Every one of those wrote', 0.3);
+    await page.goto(PB + '/#audit');
+    await expect(page.getByRole('heading', { name: 'Audit ledger' })).toBeVisible();
+    await expect(page.locator('#audit-body tr').first()).toBeVisible();
+    const offList = await hl(page.locator('#audit-body'));
+    await at(page, 'Also rule changes', 0.2);
+    await callout(page, 'decision, capture, refund, rule change, key creation', 3.4);
+    await at(page, 'Each entry is written in the same', 0.2);
+    await offList();
+    await callout(page, 'Same database transaction as the change itself', 4.2);
+    await spot(page, page.locator('#audit-body tr', { hasText: 'payment.refunded' }).first(), 2200);
+    await at(page, 'And each entry carries', 0.2);
+    await term.fresh([{ cat: 'platform', text: 'PLATFORM: plain Postgres: sha256(), a trigger, a function' }, { cat: 'app', text: 'SAMPLE APP: the ledger  |  sql = psql "$DB" as the table owner' }]);
+    const chainSql = `SELECT seq, action, left(prev_hash, 10) AS prev_hash, left(hash, 10) AS hash FROM audit_ledger ORDER BY seq DESC LIMIT 4`;
+    await term.run(`sql -c "${chainSql}"`, async () => ownerSql(chainSql), 2.4);
+    await term.mark(['\\b[0-9a-f]{10}\\b']);
+    await callout(page, 'Each prev_hash is the hash of the entry above', 4);
+    await at(page, 'Now I press Verify', 0.2);
     await term.unmark();
-    await callout(page, 'Read-only role (db-users create --permission read)', 5);
-    await at(page, 'The same query on the table', 0.2);
-    await term.run(`psql "$RO" -c "${ownerSql('transaction')}"`, async () => {
-      const out = reader(ownerSql('transaction'));
+    await page.goto(PB + '/#audit');
+    await expect(page.locator('#audit-body tr').first()).toBeVisible();
+    await click(page, page.locator('#audit-verify'), 100);
+    await expect(page.locator('#audit-status')).toContainText('Chain intact', { timeout: 30_000 });
+    await spot(page, page.locator('#audit-status'), 1800);
+    await at(page, 'The database recomputes every hash', 0.1);
+    await callout(page, 'Chain intact: every hash recomputed in the database', 4.5);
+    for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, 380); await pause(page, 700); }
+    await at(page, 'Here is the same check in plain SQL', 0.2);
+    await term.show();
+    const verSql = `SELECT * FROM audit_verify_detail()`;
+    await term.run(`sql -x -c "${verSql}"`, async () => {
+      const out = ownerSql(verSql, ['-x']);
+      expect(out).toMatch(/first_broken\s*\|\s*\n/);
+      return out;
+    }, 1.6);
+    await term.mark(['first_broken[^\\n]*', 'entries[^\\n]*']);
+    await at(page, 'A function, a trigger', 0.2);
+    await callout(page, 'No external ledger service', 4);
+    const trgSql = `SELECT tgname AS trigger, tgenabled AS enabled FROM pg_trigger WHERE tgrelid = 'audit_ledger'::regclass AND NOT tgisinternal ORDER BY 1`;
+    await term.run(`sql -c "${trgSql}"`, async () => {
+      const out = ownerSql(trgSql);
+      expect(out).toContain('audit_ledger_no_change');
+      return out;
+    }, 2.2);
+    await term.mark(['audit_ledger_no_change']);
+    await endScene(page);
+
+    // ---- scene 5: tamper, as the table owner -----------------------------------------------------------------------------------
+    begin(5);
+    const capSeq = Number(ownerSql(`SELECT seq FROM audit_ledger WHERE action = 'payment.captured' ORDER BY seq LIMIT 1`, ['-At']));
+    expect(capSeq).toBeGreaterThan(100);
+    const showRow = `SELECT seq, action, payload->'amount_captured' AS captured FROM audit_ledger WHERE seq = ${capSeq}`;
+    const upd = `UPDATE audit_ledger SET payload['amount_captured'] = '1' WHERE seq = ${capSeq}`;
+    const del = `DELETE FROM audit_ledger WHERE seq = ${capSeq}`;
+    await at(page, 'Now I try to cheat', 0.2);
+    await term.fresh([{ cat: 'platform', text: 'PLATFORM: Postgres as the table owner (local test database)  |  sql = psql "$DB"' }, { cat: 'app', text: 'SAMPLE APP: the audit ledger' }]);
+    await at(page, 'This entry is the capture', 0.1);
+    await term.run(`sql -c "${showRow}"`, async () => ownerSql(showRow), 1.6);
+    await term.mark([`\\b${capSeq}\\b`, 'payment.captured']);
+    await at(page, 'First, as the app', 0.2);
+    await term.unmark();
+    await callout(page, 'Round 1: the app\'s own database role', 3.4);
+    await term.run(`sql -c "${upd}"`, async () => {
+      const out = ownerSql(upd);
       expect(out).toContain('permission denied');
       return out;
+    }, 2.0);
+    await at(page, 'Permission denied.', 0.1);
+    await term.mark(['ERROR[^\\n]*']);
+    await at(page, 'And deleting it', 0.1);
+    await term.unmark();
+    await term.run(`sql -c "${del}"`, async () => {
+      const out = ownerSql(del);
+      expect(out).toContain('permission denied');
+      return out;
+    }, 1.2);
+    await term.mark(['ERROR[^\\n]*']);
+    await at(page, 'The owner can grant itself', 0.1);
+    await term.unmark();
+    await callout(page, 'Round 2: the table owner', 3.4);
+    const grant = `GRANT UPDATE ON audit_ledger TO CURRENT_USER`;
+    await term.run(`sql -c "${grant}"`, async () => ownerSql(grant), 1.0);
+    await term.run(`sql -c "${upd}"`, async () => {
+      const out = ownerSql(upd);
+      expect(out).toContain('append-only');
+      return out;
+    }, 1.4);
+    await at(page, 'The trigger still refuses', 0.1);
+    await term.mark(['ERROR[^\\n]*']);
+    await at(page, 'But the owner can switch', 0.1);
+    await term.unmark();
+    await callout(page, 'The owner switches the trigger off, edits, switches it on', 5);
+    const off = `ALTER TABLE audit_ledger DISABLE TRIGGER audit_ledger_no_change`;
+    const on = `ALTER TABLE audit_ledger ENABLE TRIGGER audit_ledger_no_change`;
+    await term.run(`sql -c "${off}"`, async () => ownerSql(off), 0.9);
+    await term.run(`sql -c "${upd}"`, async () => {
+      const out = ownerSql(upd);
+      expect(out).toContain('UPDATE 1');
+      return out;
+    }, 1.2);
+    await term.mark(['UPDATE 1']);
+    await term.run(`sql -c "${on}"`, async () => ownerSql(on), 0.9);
+    await at(page, 'The capture now says one cent', 0.1);
+    await term.unmark();
+    await term.run(`sql -c "${showRow}"`, async () => {
+      const out = ownerSql(showRow);
+      expect(out).toMatch(/\|\s+1\s*\n/);
+      return out;
+    }, 1.2);
+    await term.mark(['\\s1\\s*(?=\\n|$)']);
+    await endScene(page);
+
+    // ---- scene 6: Verify names the first broken entry ------------------------------------------------------------------------------
+    begin(6);
+    await at(page, 'Now, back in the dashboard', 0.2);
+    await page.goto(PB + '/#audit');
+    await expect(page.locator('#audit-body tr').first()).toBeVisible();
+    await at(page, 'I verify the chain again', 0.3);
+    await click(page, page.locator('#audit-verify'), 100);
+    await expect(page.locator('#audit-status')).toContainText('Chain broken', { timeout: 30_000 });
+    await expect(page.locator('#audit-status')).toContainText(`First broken entry: #${capSeq}`);
+    await expect(page.locator(`#audit-body tr[data-seq="${capSeq}"]`)).toHaveClass(/broken/);
+    await at(page, 'Chain broken.', 0.1);
+    await callout(page, `Chain broken. First broken entry: #${capSeq}`, 5);
+    await spot(page, page.locator('#audit-status'), 2200);
+    await at(page, 'Everything before it', 0.2);
+    await spot(page, page.locator(`#audit-body tr[data-seq="${capSeq}"]`), 2400);
+    await at(page, 'The same answer comes', 0.2);
+    await term.fresh([{ cat: 'platform', text: 'PLATFORM: audit_verify_detail(), a SQL function' }, { cat: 'app', text: 'SAMPLE APP: the audit ledger' }]);
+    const verSql2 = `SELECT * FROM audit_verify_detail()`;
+    await term.run(`sql -x -c "${verSql2}"`, async () => {
+      const out = ownerSql(verSql2, ['-x']);
+      expect(out).toMatch(new RegExp(`first_broken\\s*\\|\\s*${capSeq}\\b`));
+      return out;
+    }, 1.6);
+    await term.mark([`first_broken[^\\n]*`, 'reason[^\\n]*']);
+    await at(page, 'Look at that.', 0.1);
+    await callout(page, 'No blockchain. No ledger service. Just Postgres.', 6);
+    await endScene(page);
+
+    // ---- scene 7: row-level security: the same query as two merchants, nothing set, and a plain-grant AI role -----------------------------------
+    begin(7);
+    const acme = ownerSqlBypass(`SELECT id FROM merchant WHERE name = 'Acme Shop'`, ['-At']);
+    const other = ownerSqlBypass(`SELECT id FROM merchant WHERE name = 'Demo Shop'`, ['-At']);
+    expect(acme).toMatch(/^mch_/);
+    expect(other).toMatch(/^mch_/);
+    psql('postgres', ['-c', `CREATE ROLE ai_agent LOGIN NOSUPERUSER; GRANT USAGE ON SCHEMA public TO ai_agent`]);
+    const rlsQ = `SELECT merchant_id, count(*) AS payments, min(payment_id) AS first_payment FROM transaction GROUP BY 1`;
+    const asMerchant = (m: string) => psql('pb_owner', ['-c', `SET app.merchant_id = '${m}'`, '-c', rlsQ, '-v', 'VERBOSITY=terse']);
+    await at(page, 'Next problem', 0.2);
+    await term.fresh([{ cat: 'platform', text: 'PLATFORM: row-level security, FORCEd, in Postgres' }, { cat: 'app', text: 'SAMPLE APP: sets app.merchant_id per request' }]);
+    await callout(page, "Merchant A must never see merchant B's rows", 4.5);
+    await at(page, 'Row-level security does that', 0.2);
+    const polSql = `SELECT tablename, policyname, cmd FROM pg_policies WHERE tablename IN ('transaction', 'fraud_assessment', 'fraud_case') ORDER BY 1, 2`;
+    await term.run(`sql -c "${polSql}"`, async () => {
+      const out = ownerSql(polSql);
+      expect(out).toContain('pb_scope');
+      return out;
     }, 2.4);
+    await at(page, 'A merchant sees only its own rows', 0.1);
+    await term.mark(['pb_scope']);
+    await callout(page, 'Rule 1: a merchant sees only its own rows', 3);
+    await at(page, 'Child rows follow', 0.1);
+    await term.unmark();
+    await term.mark(['fraud_assessment']);
+    await callout(page, 'Rule 2: child rows follow their payment', 3);
+    await at(page, 'Cases and chargebacks', 0.1);
+    await term.unmark();
+    await term.mark(['fraud_case[^\\n]*']);
+    await callout(page, 'Rule 3: cases and chargebacks belong to the operator', 3.4);
+    await at(page, 'And read-only auditors', 0.1);
+    await term.unmark();
+    await term.mark(['pb_readonly']);
+    await callout(page, 'Rule 4: read-only auditors may look, never change', 3.6);
+    await at(page, 'First, as Acme Shop', 0.2);
+    await term.run(`sql -c "SET app.merchant_id = '$ACME'" -c "${rlsQ}"`, async () => {
+      const out = asMerchant(acme);
+      expect(out).toContain('(1 row)');
+      expect(out).toContain(acme);
+      return out;
+    }, 2.2);
+    await term.mark([acme]);
+    await at(page, 'Now the same query', 0.2);
+    await term.unmark();
+    await term.run(`sql -c "SET app.merchant_id = '$OTHER'" -c "${rlsQ}"`, async () => {
+      const out = asMerchant(other);
+      expect(out).toContain('(1 row)');
+      expect(out).toContain(other);
+      expect(out).not.toContain(acme);
+      return out;
+    }, 2.2);
+    await term.mark([other]);
+    await at(page, 'Different rows', 0.2);
+    await callout(page, 'Same query, same table, different rows', 3.4);
+    await term.unmark();
+    await term.run(`sql -c "${rlsQ}"`, async () => {
+      const out = ownerSql(rlsQ);
+      expect(out).toContain('(0 rows)');
+      return out;
+    }, 1.6);
+    await term.mark(['\\(0 rows\\)']);
+    await at(page, 'It fails closed', 0.1);
+    await callout(page, 'Nothing set = zero rows, even for the table owner', 4);
+    await at(page, 'Last, an AI agent', 0.2);
+    await term.unmark();
+    const grantAi = `GRANT SELECT ON transaction TO ai_agent`;
+    await term.run(`sql -c "${grantAi}"`, async () => ownerSql(grantAi), 1.4);
+    await atEnd(page, 'I give its role', -0.1);
+    const cnt = `SELECT count(*) FROM transaction`;
+    await term.run(`psql "$AI" -c "${cnt}"`, async () => {
+      const out = psql('ai_agent', ['-c', cnt]);
+      expect(out).toMatch(/\n\s*0\n/);
+      return out;
+    }, 1.4);
+    await term.mark(['\\b0\\b(?=\\n)']);
+    await callout(page, 'SELECT granted, zero rows: the policy is forced', 4);
+    await at(page, 'A grant alone opens nothing', 0.1);
+    await callout(page, 'A grant alone opens nothing', 3.5);
+    await endScene(page);
+
+    // ---- scene 8: masked views for the read-only role, and the 5-minute re-assert ------------------------------------------------------
+    begin(8);
+    const maskQ = (t: string) => `SELECT payment_id, customer_id, request->>'ip' AS ip FROM ${t} ORDER BY created_at DESC LIMIT 3`;
+    await at(page, 'Next problem', 0.2);
+    await term.fresh([{ cat: 'platform', text: 'PLATFORM: a1p_readonly role (agentpg db-users --permission read)' }, { cat: 'app', text: 'SAMPLE APP: masked views' }]);
+    await callout(page, 'Analyst or AI agent: not the customer details', 4);
+    await at(page, "The app's own connection", 0.2);
+    await term.run(`PGOPTIONS='-c app.bypass=on' psql "$DB" -c "${maskQ('transaction')}"`, async () => {
+      const out = ownerSqlBypass(maskQ('transaction'));
+      expect(out).toContain('cus_');
+      return out;
+    }, 2.2);
+    await term.mark(['cus_\\w+', '\\d+\\.\\d+\\.\\d+\\.\\d+']);
+    await at(page, 'The read-only role is denied', 0.2);
+    await term.unmark();
+    await term.run(`psql "$RO" -c "${maskQ('transaction')}"`, async () => {
+      const out = reader(maskQ('transaction'));
+      expect(out).toContain('permission denied');
+      return out;
+    }, 1.8);
     await term.mark(['permission denied']);
     await at(page, 'But the masked view', 0.2);
     await term.unmark();
-    await term.run(`psql "$RO" -c "${ownerSql('transaction_masked')}"`, async () => {
-      const out = reader(ownerSql('transaction_masked'));
+    await term.run(`psql "$RO" -c "${maskQ('transaction_masked')}"`, async () => {
+      const out = reader(maskQ('transaction_masked'));
       expect(out).toContain('xxx');
       return out;
-    }, 2.4);
-    await at(page, 'Identifiers become short hashes', 0.2);
+    }, 2.2);
     await term.mark(['[0-9a-f]{12}', '\\d+\\.\\d+\\.\\d+\\.xxx']);
-    await at(page, 'And a write is refused', 0.2);
+    await at(page, 'Now, one real finding', 0.2);
     await term.unmark();
-    const writeSql = `UPDATE transaction_masked SET fraud_score = 0`;
-    await term.run(`psql "$RO" -c "${writeSql}"`, async () => {
-      const out = reader(writeSql);
-      expect(out).toMatch(/permission denied|cannot update|not allowed/);
-      return out;
-    }, 1.6);
-    await term.mark(['ERROR[^\\n]*']);
+    await callout(page, 'New database user = grants re-open. PayBroker re-asserts every 5 minutes', 6.5);
+    await at(page, 'Its status is public', 0.2);
+    await term.run(`curl -s $PB/readyz | jq .masking`, async () => {
+      const r: any = await (await fetch(PB + '/readyz')).json();
+      expect(r.masking).toBeTruthy();
+      return JSON.stringify(r.masking, null, 2);
+    }, 1.4);
+    await term.mark(['"drift": [^\\n]*', '"ok": [^\\n]*']);
     await endScene(page);
 
-    // ---- scene 13: database insights: local (pg_stat_statements) and the captured AgentPG output -------------------------------
-    begin(13);
-    await at(page, 'Last problem', 0.2);
+    // ---- scene 9: EDB tech from the live fleet (captured) -------------------------------------------------------------------------------
+    begin(9);
+    await at(page, 'The platform adds one more thing', 0.2);
     await page.goto(PB + '/#insights');
-    await at(page, 'That is the Database insights tab', 0.2);
     await expect(page.getByRole('heading', { name: 'Database insights' })).toBeVisible();
-    await page.waitForTimeout(1500);
-    await spot(page, page.getByRole('heading', { name: 'Database insights' }), 1500);
-    await at(page, 'On my laptop', 0.2);
-    await callout(page, 'Local Postgres: pg_stat_statements only', 6);
-    await at(page, 'On AgentPG, the same page', 0.2);
+    await page.waitForTimeout(1200);
+    await callout(page, 'This laptop: pg_stat_statements only', 5);
+    await at(page, 'On AgentPG, the instance also has', 0.2);
     await callout(page, 'On AgentPG: + edb_stat_monitor, edb_pg_tuner, query_advisor', 6);
-    await page.mouse.wheel(0, 700);
-    await at(page, 'So this is real output', 0.2);
-    await term.fresh([{ cat: 'cap', text: 'CAPTURED from our live AgentPG fleet: not run in this video' }, { cat: 'platform', text: 'PLATFORM: EDB extensions' }]);
+    await at(page, 'I cannot run them here', 0.2);
+    await term.fresh([{ cat: 'cap', text: 'CAPTURED from the live AgentPG fleet: not run in this video' }, { cat: 'platform', text: 'PLATFORM: EDB extensions' }]);
     await term.run('agentpg extensions list $PAYBROKER_INSTANCE', async () => captured('extensions-installed.txt', 'paybroker'), 1.8);
-    await at(page, 'The PayBroker instance has', 0.2);
-    await term.mark(['edb_stat_monitor', 'query_advisor', 'vector', 'fuzzystrmatch']);
-    await at(page, 'Its advisor suggested', 0.2);
+    await at(page, 'The PayBroker instance has all three', 0.2);
+    await term.mark(['edb_stat_monitor[^\\n]*', 'edb_pg_tuner[^\\n]*', 'query_advisor[^\\n]*', 'vector', 'fuzzystrmatch']);
+    await at(page, 'And query_advisor suggested', 0.2);
     await term.unmark();
     await term.run('ecoctl insights   # runs: agentpg recommend', async () => captured('ecoctl-insights.txt', 'paybroker'), 1.6);
     await term.mark(['CREATE INDEX', 'CREATE STATISTICS']);
     await endScene(page);
 
-    // ---- scene 14: try it yourself, and the legend again ------------------------------------------------------------------------
-    begin(14);
+    // ---- scene 10: close, and the legend again ------------------------------------------------------------------------------------------
+    begin(10);
     await page.goto(SHOP + '/diagram.html');
     for (const k of [6, 0, 1, 2, 3, 4]) await show(k);
-    await at(page, 'On AgentPG, one command', 0.2);
-    await show(7);
-    await at(page, 'Or run it on your laptop', 0.2);
-    await show(8);
-    await pause(page, 900);
-    await show(9);
-    await at(page, 'Remember the three colours', 0.1);
-    await hot(0, 1, 2, 3, 4);
-    await at(page, 'Platform is Postgres', 0.1);
+    await at(page, 'The platform, EDB Postgres', 0.1);
     await hot(0);
-    await at(page, 'Scaffolding is swappable', 0.1);
+    await at(page, 'The scaffolding is swappable', 0.1);
     await hot(2, 3, 4);
     await at(page, 'PayBroker is the sample', 0.1);
     await hot(1);
-    await at(page, 'The guide is in the docs', 0.1);
+    await at(page, 'Try it yourself', 0.1);
     await hot();
+    await at(page, 'One command on AgentPG', 0.1);
+    await show(7);
+    await at(page, 'Or Docker on your laptop', 0.1);
+    await show(8);
+    await at(page, 'The guide, section eighteen', 0.1);
     await show(10);
     await endScene(page);
   } finally {

@@ -1,189 +1,177 @@
-## 1 am_eric
-I run a marketplace. Card fraud and false declines cost me money. And I will not ship payment data to three vendors.
+## 1 am_michael
+I am running payments. And I have to prove that nobody changed a decision after the fact. Not my engineers. Not my database admin. Not me.
 
-...
+Here is how EDB Postgres on AgentPG does that. This platform does the work you are about to see.
 
-So here is how Postgres on AgentPG does it. That is the platform part, with its EDB extensions. PayBroker is the sample app on top.
+PayBroker is only a sample app. Sign-in, the LLM gateway, and the secret vault are reference scaffolding. They are swappable, and they are not the point.
 
-Three things here are scaffolding you can swap: sign-in, the model gateway, and the secret vault.
+It uses test cards only. Nothing here moves real money.
 
-Sign-in speaks standard OpenID Connect. Any provider works, as long as it sends the roles our apps expect. The gateway speaks an OpenAI-compatible API. Both are set by configuration.
+## 2 af_heart
+First, a quick setup. I paste the one-time code, and choose a password.
 
-The vault is a small module of the shared kit. It is replaceable, but not by a setting.
+One click sends a hundred and twenty fictional payments. Each one is scored. And each decision goes into a ledger.
 
-It uses only test cards, so nothing here moves real money.
+[pause 4.0]
 
-## 2 am_eric
-First, setup. I paste the one-time code, and choose an admin password.
-
-Now the dashboard. One click loads a hundred and twenty fictional payments, honest ones and fraud attempts.
-
-I click, and each payment is scored.
-
-[pause 7]
-
-Done. Under three hundred, a payment is approved.
-
-Up to six ninety-nine, the customer must verify. Seven hundred or more is declined.
-
-## 3 af_heart
-Next, a shop. I create a merchant called Acme Shop, and then two keys.
-
-The secret key stays on the shop's server. Each key is shown once, so it is hidden right after.
-
-The publishable key can only swap a card for a token. So it is safe in a web page.
-
-Then the allowed browser origin, and a webhook address. The webhook signing secret appears once, too.
-
-## 4 af_heart
-Now a payment. The customer's browser trades the test card for a token.
-
-So the shop's server never sees the card number.
-
-The server then authorizes forty-nine ninety-nine dollars, with an idempotency key.
-
-[pause 1.5]
-
-The answer says authorized, with a fraud score, and the processor that was used.
-
-Now suppose the network drops, and the shop sends the same request again.
-
-[pause 1.5]
-
-It gets the same payment back. Look at the payment id. It is identical. Never a second charge.
-
-## 5 af_heart
-In the dashboard, the payment opens with its score, out of one thousand.
-
-Below, the checks that ran, and the time spent in each step.
-
-And last, the processor that handled it. Every decision is explained.
-
-## 6 am_michael
-Now, test cards that trigger specific behaviours. The first one makes the customer's bank decline.
-
-[pause 2.0]
-
-Four oh two, card declined.
-
-...
-
-The second card demands three-D Secure, where the customer proves who they are.
-
-[pause 2.0]
-
-The answer holds a page to send the customer to. I open it, and approve.
-
-[pause 1.5]
-
-The customer is back at the shop, with a signed link.
-
-...
-
-The third card makes the first processor fail.
-
-[pause 2.0]
-
-PayBroker tries the next processor. So the payment still succeeds. The routing shows an error, then approved.
-
-## 7 af_bella
-Now, the payment my marketplace fears. A brand-new account, a very fast checkout, a pasted card number, and a large basket.
-
-[pause 2.0]
-
-Four oh three, rejected. No processor ever saw it.
-
-A case opens for an analyst. The summary comes from the built-in fallback, because no language model is configured.
-
-The AI only advises. A person decides. I choose permanent block.
-
-## 8 am_adam
-The shop also needs to hear about every payment. PayBroker sends it signed events, on a webhook.
-
-Here is the shop's receiver. It checks every signature, and says signature okay.
-
-On the merchant, every delivery is listed. If the shop is down, PayBroker retries, with growing delays.
-
-## 9 af_sarah
-Now, under the hood. Here is a problem the analyst has. Have we seen payments like this one before?
-
-Postgres answers it, with pgvector. Every payment is stored as a list of seventeen numbers.
-
-This index finds the nearest neighbours fast. It is HNSW, with cosine distance.
-
-[pause 1.5]
-
-And here is the real query from the app. It sorts past payments by distance, and keeps the five nearest flagged ones.
-
-[pause 2.0]
-
-Each row shows how close it is, and its risk category.
-
-Those five go to the triage. No second system, and no copy of the data.
-
-## 10 am_michael
-Next problem. Fraudsters pay with cards that are not theirs. So the cardholder name should look like the account name.
-
-Postgres can compare them, with the fuzzystrmatch extension. Here are two real calls.
-
-Smith and Smyth are one letter apart, and they sound the same.
-
-[pause 1.5]
-
-Now a payment. The card says Jon Smith. The account says Peter Wong. The basket is large.
-
-[pause 2.0]
-
-The reason code is name mismatch. And the customer is asked to verify.
-
-In the dashboard, the same reason code appears, with its explanation.
-
-## 11 am_michael
-That step came from a rule. There are four built-in rules now.
-
-The new one asks for three-D Secure when the names do not match, on a large basket.
-
-Rules are plain data. And the editor only accepts known fields, so a typo is refused.
-
-## 12 af_bella
-Next problem. I do not want everyone who reads the database to see customer data.
-
-Here is the app's own connection. It sees the real customer id, and the real address.
-
-[pause 1.5]
-
-Now the read-only role. It is the kind AgentPG makes for read-only users, and for its restricted MCP. The same query on the table is denied.
-
-[pause 1.5]
-
-But the masked view is allowed. Identifiers become short hashes. The address loses its last number.
-
-[pause 1.5]
-
-And a write is refused. The database enforces all of it.
-
-## 13 am_adam
-Last problem. How is the database doing, and what should I tune?
-
-That is the Database insights tab. On my laptop, plain Postgres, it shows the slowest statements, from pg_stat_statements. That is all a laptop can show.
-
-On AgentPG, the same page also reads edb_stat_monitor, edb_pg_tuner, and query_advisor, when they are installed.
-
-I cannot run them here. So this is real output, captured from our live AgentPG fleet.
+Done. Now a shop.
 
 [pause 1.0]
 
-The PayBroker instance has edb_stat_monitor and query_advisor, next to pgvector and fuzzystrmatch.
+I create Acme Shop, with a secret key.
+
+[pause 3.0]
+
+Then a publishable key.
+
+[pause 2.5]
+
+Each key is shown once, then hidden.
+
+## 3 af_heart
+Now Acme Shop takes a payment. The customer's card becomes a token, so the shop never sees the number.
+
+The server authorizes forty-nine ninety-nine dollars.
 
 [pause 1.5]
 
-Its advisor suggested two indexes, and one statistics object. It only suggests. A person decides.
+Authorized. Then it captures the money.
 
-## 14 af_heart
-Try it yourself. On AgentPG, one command deploys it. Or run it on your laptop, with Docker.
+[pause 1.5]
 
-Remember the three colours. Platform is Postgres on AgentPG. Scaffolding is swappable. PayBroker is the sample.
+And refunds ten dollars.
 
-The guide is in the docs folder. Section seventeen lists every EDB feature this app uses.
+[pause 1.5]
 
-Next, see how ShopFront uses PayBroker.
+One more. The card says Jon Smith. The account says Peter Wong. The basket is large.
+
+[pause 1.5]
+
+Postgres compares the names with an extension, fuzzystrmatch. The reason is name mismatch, and the customer is asked to verify.
+
+## 4 am_eric
+Every one of those wrote a ledger entry. Decisions, captures, refunds. Also rule changes, and key creation.
+
+Each entry is written in the same database transaction as the change itself. So a decision cannot exist without its entry.
+
+And each entry carries the SHA-256 hash of the entry before it. That is a chain.
+
+Now I press Verify.
+
+[pause 2.0]
+
+The database recomputes every hash. Chain intact.
+
+Here is the same check in plain SQL.
+
+[pause 2.5]
+
+A function, a trigger, and a hash. There is no external ledger service to run.
+
+## 5 af_bella
+Now I try to cheat. This entry is the capture of forty-nine ninety-nine.
+
+[pause 1.5]
+
+I will change it to one cent. First, as the app's own database role.
+
+[pause 1.5]
+
+Permission denied. And deleting it? Also denied.
+
+[pause 1.5]
+
+But I am also the table owner. The owner can grant itself the right to update.
+
+[pause 3.0]
+
+The trigger still refuses. The table is append only.
+
+[pause 1.0]
+
+But the owner can switch the trigger off. So I do.
+
+[pause 4.5]
+
+The capture now says one cent. No error. No alarm.
+
+[pause 1.0]
+
+## 6 af_bella
+Now, back in the dashboard. I verify the chain again.
+
+[pause 2.5]
+
+Chain broken. The first broken entry is named, with its number, and the reason. The content no longer matches its hash.
+
+Everything before it still verifies.
+
+The same answer comes in plain SQL.
+
+[pause 2.5]
+
+Look at that. Nobody can stop the owner. But nobody can change history without leaving proof. No blockchain, no ledger service, no extra system. Just Postgres.
+
+## 7 am_adam
+Next problem. Acme Shop must never see another merchant's payments. Even if a developer forgets the filter.
+
+Row-level security does that, inside the database. There are four rules. A merchant sees only its own rows. Child rows follow their payment. Cases and chargebacks belong to the operator. And read-only auditors may look, never change.
+
+Here is one query. First, as Acme Shop.
+
+[pause 2.0]
+
+One row. Now the same query, as another merchant.
+
+[pause 2.0]
+
+Different rows. And with nothing set at all?
+
+[pause 2.0]
+
+Zero rows. It fails closed, even for the table owner.
+
+Last, an AI agent. I give its role a plain select grant on the table.
+
+[pause 2.5]
+
+Still zero rows. The policy is forced. A grant alone opens nothing.
+
+## 8 af_sarah
+Next problem. An analyst, or an AI agent, needs to read the data. But not the customer details.
+
+The app's own connection sees the real customer id, and the real address.
+
+[pause 1.5]
+
+The read-only role is denied the base table.
+
+[pause 1.5]
+
+But the masked view is allowed. Identifiers become hashes. Addresses lose the last number.
+
+[pause 1.5]
+
+Now, one real finding. When someone creates a new database user, grants on the base tables open again. So PayBroker re-asserts the masking every five minutes. Its status is public, here.
+
+[pause 2.5]
+
+## 9 am_michael
+The platform adds one more thing. Insights. On my laptop, plain Postgres shows only pg_stat_statements.
+
+On AgentPG, the instance also has edb_stat_monitor, edb_pg_tuner, and query_advisor. I cannot run them here. So this card is captured from our live AgentPG fleet.
+
+[pause 1.5]
+
+The PayBroker instance has all three, next to pgvector and fuzzystrmatch.
+
+[pause 1.5]
+
+And query_advisor suggested two indexes and a statistics object. It only suggests. A person decides.
+
+## 10 af_heart
+So, the problem was proof. Nobody altered the record, and the database can show it.
+
+The platform, EDB Postgres on AgentPG, did the work. The scaffolding is swappable. PayBroker is the sample.
+
+Try it yourself. One command on AgentPG. Or Docker on your laptop. The guide, section eighteen, has the tamper test.
