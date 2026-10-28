@@ -62,6 +62,11 @@ function pgBin(): string {
 
 export interface Cluster {
   url: string;
+  /** Same database as the login role `reporting_reader` (a member of a1p_readonly, like `agentpg db-users create --permission read`). */
+  readerUrl: string;
+  port: number;
+  dbName: string;
+  bin: string;
   stop(): void;
 }
 
@@ -76,7 +81,7 @@ export async function startCluster(dbName: string): Promise<Cluster> {
   const log = fs.openSync(path.join(dir, 'postgres.log'), 'a');
   const proc: ChildProcess = spawn(
     path.join(bin, 'postgres'),
-    ['-D', data, '-c', 'listen_addresses=127.0.0.1', '-c', `port=${port}`, '-c', 'unix_socket_directories=', '-c', 'fsync=off', '-c', 'max_connections=100'],
+    ['-D', data, '-c', 'listen_addresses=127.0.0.1', '-c', `port=${port}`, '-c', 'unix_socket_directories=', '-c', 'fsync=off', '-c', 'max_connections=100', '-c', 'shared_preload_libraries=pg_stat_statements'],
     { env, stdio: ['ignore', log, log] },
   );
   const psql = (db: string, sql: string) =>
@@ -103,12 +108,19 @@ export async function startCluster(dbName: string): Promise<Cluster> {
       }
     }, 30_000);
     psql('postgres', `CREATE DATABASE ${dbName} ENCODING 'UTF8' TEMPLATE template0`);
-    for (const ext of ['vector', 'pg_trgm']) psql(dbName, `CREATE EXTENSION IF NOT EXISTS ${ext}`);
+    for (const ext of ['vector', 'pg_trgm', 'pg_stat_statements']) psql(dbName, `CREATE EXTENSION IF NOT EXISTS ${ext}`);
+    // What AgentPG provides on every instance: the group role a1p_readonly (SELECT on new public tables by default) and a login
+    // role that belongs to it. Created BEFORE `paybroker migrate`, whose after-migrate hook then takes the default away (hardening.py).
+    psql('postgres', `CREATE ROLE a1p_readonly NOLOGIN`);
+    psql('postgres', `CREATE ROLE reporting_reader LOGIN`);
+    psql('postgres', `GRANT a1p_readonly TO reporting_reader`);
+    psql(dbName, `GRANT USAGE ON SCHEMA public TO a1p_readonly`);
+    psql(dbName, `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO a1p_readonly`);
   } catch (e) {
     stop();
     throw e;
   }
-  return { url: `postgresql://postgres@127.0.0.1:${port}/${dbName}`, stop };
+  return { url: `postgresql://postgres@127.0.0.1:${port}/${dbName}`, readerUrl: `postgresql://reporting_reader@127.0.0.1:${port}/${dbName}`, port, dbName, bin, stop };
 }
 
 export interface Running {
@@ -168,6 +180,7 @@ export interface Stack {
   /** One-time setup code the server printed (it belongs to the throwaway server and is used up when the video ends). */
   setupCode: string;
   serverLog(): string;
+  cluster: Cluster;
   stop(): Promise<void>;
 }
 
@@ -196,7 +209,7 @@ export async function startStack(): Promise<Stack> {
   try {
     app = await launch(bin, ['serve'], env, work, `http://127.0.0.1:${port}`, '/readyz');
     const code = await waitFor('the setup code', () => app!.logs().match(/\b([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})\b/)?.[1], 20_000);
-    return { url, port, setupCode: code, serverLog: () => app!.logs(), stop: cleanup };
+    return { url, port, setupCode: code, serverLog: () => app!.logs(), cluster, stop: cleanup };
   } catch (e) {
     await cleanup();
     throw e;

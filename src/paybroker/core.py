@@ -37,6 +37,7 @@ PERMISSIONS = {
     "model:manage": "capture and retention settings, label-aging, upload, activate and roll back fraud models (admin only)",
     "data:reset": "wipe the transaction data and start fresh, keeping the configuration (admin only; cannot be undone)",
     "mcp:use": "use the MCP server",
+    "audit:read": "read the tamper-evident audit ledger and verify its chain (admin only)",
     "metrics:scrape": "scrape /metrics",
     # merchant API keys
     "payments:write": "authorize, capture, void and refund payments (merchant secret key)",

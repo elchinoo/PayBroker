@@ -138,8 +138,8 @@ Deliveries are at least once: use `id` to deduplicate.
 ## Operator API (`/api`)
 
 Permissions (what a role or token scope grants): `payments:read`, `cases:review`, `rules:manage`, `merchants:manage`,
-`settings:manage`, `training:export`, `model:manage`, `data:reset`, `mcp:use`, `metrics:scrape`. Three of them (`training:export`,
-`model:manage` and `data:reset`) belong to the `admin` role and the `full` scope only. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
+`settings:manage`, `training:export`, `model:manage`, `data:reset`, `audit:read`, `mcp:use`, `metrics:scrape`. Four of them (`training:export`,
+`model:manage`, `data:reset` and `audit:read`) belong to the `admin` role and the `full` scope only. Token scopes: `read` (`payments:read`, `mcp:use`), `metrics`, `full`.
 A service token with scope `paybroker.admin` holds `merchants:manage` and `payments:read` and nothing else (see *Provisioning from another service*).
 Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token calls don't need it.
 
@@ -176,6 +176,8 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `DELETE /api/admin/models/{id}` | `model:manage` | refused (409) while active |
 | `GET /api/admin/data/reset` | `data:reset` | what a reset would delete right now (exact row counts per table), the confirmation phrase, and the last 10 resets (who, when, outcome, counts) |
 | `POST /api/admin/data/reset` `{confirm, include_training_data?, include_rule_suggestions?}` | `data:reset` | wipes the transaction data and keeps the configuration (see below); `confirm` must be exactly `RESET PAYBROKER DATA` (else 422, nothing is deleted); both flags default to `true`; 409 while another reset runs; returns `{deleted: {table: rows}, skipped, seconds, chunks, max_chunk_rows, audit_id}` |
+| `GET /api/audit?limit=&subject=` | `audit:read` | the newest entries of the tamper-evident audit ledger, newest first: `{items: [{seq, ts, actor, action, subject, payload, prev_hash, hash}]}`; `limit` 1 to 500 (default 50, else 422); `subject` keeps one payment id, rule id, merchant id... Payloads are masked when written (no card data, keys, secrets, full IPs or raw customer ids) |
+| `GET /api/audit/verify` | `audit:read` | recomputes the whole hash chain in the database: `{intact, entries, first_broken, reason, head: {seq, hash}, row_level_security: {enforced, role_bypasses, readonly_door_open, effective, tables, missing}}`. `first_broken` is the seq of the first entry whose content, link or position does not match (or the seq just past the end when entries were cut off), `null` when intact; `reason` says which. Write `head.hash` down elsewhere to catch a full rewrite. `row_level_security.effective: false` means the policies exist but this database role is exempt from them |
 | `GET /metrics` | `metrics:scrape` | Prometheus |
 
 ### Reset the data (`POST /api/admin/data/reset`)

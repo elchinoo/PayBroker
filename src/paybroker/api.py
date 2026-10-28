@@ -19,7 +19,7 @@ from . import __version__, auth, cards, core, cors, merchants, ml, payments, rou
 from . import metrics as m
 from .config import get_settings
 from .core import COOKIE, CSRF_HEADER, fed, local
-from .db import close_pool, connect, pool
+from .db import close_pool, connect, merchant_conn, system_conn
 from .mcp_server import mcp
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -185,7 +185,7 @@ app.add_middleware(_Guard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), bo
 
 
 def _origin_listed(origin: str) -> bool:
-    with pool().connection() as conn:
+    with system_conn() as conn:       # a CORS preflight carries no credential: it asks across all merchants
         ok = merchants.origin_listed(conn, origin)
         conn.rollback()
     return ok
@@ -344,7 +344,7 @@ def tokenize_auth(request: Request, p: Principal = Depends(merchant_auth("vault:
     if origin is None:
         return p
     try:
-        with pool().connection() as conn:
+        with merchant_conn(_mid(p)) as conn:
             listed = merchant_cached(conn, _mid(p))["allowed_origins"]
     except (psycopg.OperationalError, RuntimeError) as exc:
         raise _db_unavailable() from exc
@@ -360,7 +360,7 @@ def tokenize_auth(request: Request, p: Principal = Depends(merchant_auth("vault:
 def tokenize(body: CardBody, p: Principal = Depends(tokenize_auth)):
     """Exchange a TEST card for a token. Meant to be called from the customer's browser with a publishable key (CORS: see cors.py)."""
     def run():
-        with pool().connection() as conn:
+        with merchant_conn(_mid(p)) as conn:
             return cards.tokenize(conn, _mid(p), body.number, body.exp_month, body.exp_year, body.cvc)
     return _paying(run)
 
@@ -375,7 +375,7 @@ def authorize(body: AuthorizeBody, request: Request, p: Principal = Depends(merc
     url = public_url(request, core.public_url_env)
 
     def run():
-        with pool().connection() as conn:
+        with merchant_conn(_mid(p)) as conn:
             status, out = payments.authorize(conn, merchant_cached(conn, _mid(p)), data, url)
         return JSONResponse(out, status_code=status)
     return _paying(run)
@@ -384,7 +384,7 @@ def authorize(body: AuthorizeBody, request: Request, p: Principal = Depends(merc
 @app.get("/v1/payments/{payment_id}")
 def get_payment(payment_id: str, request: Request, p: Principal = Depends(merchant_auth("payments:write"))):
     def run():
-        with pool().connection() as conn:
+        with merchant_conn(_mid(p)) as conn:
             tx, fa, ch = payments.load(conn, payment_id, _mid(p))
             conn.rollback()
         return JSONResponse(payments.render(tx, fa, ch, public_url(request, core.public_url_env)))
@@ -394,7 +394,7 @@ def get_payment(payment_id: str, request: Request, p: Principal = Depends(mercha
 @app.get("/v1/payments")
 def list_payments(limit: int = Query(20, ge=1, le=100), status: str | None = Query(None, max_length=20),
                   p: Principal = Depends(merchant_auth("payments:write"))):
-    with pool().connection() as conn:
+    with merchant_conn(_mid(p)) as conn:
         rows = conn.execute(
             "SELECT payment_id, status, amount, currency, fraud_score, psp_selected, created_at FROM transaction "
             "WHERE merchant_id=%s AND (%s::text IS NULL OR status=%s) ORDER BY created_at DESC LIMIT %s",
@@ -408,7 +408,7 @@ def _action(name: str):
         url = public_url(request, core.public_url_env)
 
         def run():
-            with pool().connection() as conn:
+            with merchant_conn(_mid(p)) as conn:
                 mer = merchant_cached(conn, _mid(p))
                 if name == "void":
                     out = payments.void(conn, mer, payment_id, url)

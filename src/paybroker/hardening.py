@@ -91,7 +91,13 @@ HIDDEN = (
 
 # Readable as they are: configuration and numbers with no personal data.
 READABLE = ("fraud_assessment", "fraud_rule", "rule_suggestion", "psp_connector", "outbox", "model_version", "training_example",
-            "triage_llm_call", "schema_migrations")
+            "triage_llm_call", "schema_migrations",
+            "audit_ledger", "audit_ledger_head")    # masked at write time; a read-only auditor can read and verify the chain
+
+# Row-level security (migration 008): tables whose rows belong to one merchant, and tables no merchant may ever read. Both are
+# FORCEd, so the owner (the app's own role) is bound too. Everything else is shared by design (docs/GUIDE.md section 18).
+RLS_MERCHANT = ("merchant", "merchant_key", "card", "transaction", "webhook_event", "three_ds_challenge", "fraud_assessment")
+RLS_OPERATOR = ("fraud_case", "chargeback", "admin_audit")
 
 
 def hide_table(conn: psycopg.Connection, table: str, readonly_role: str = READONLY_ROLE) -> dict:
@@ -136,3 +142,22 @@ def apply(conn: psycopg.Connection, readonly_role: str = READONLY_ROLE) -> dict:
     for t in unclassified(conn):
         log.warning("table %s is not classified in paybroker.hardening: the read-only role can read it", t)
     return out
+
+
+def rls_status(conn: psycopg.Connection) -> dict:
+    """Is row-level security really binding this connection? `enforced`: every table in RLS_MERCHANT and RLS_OPERATOR has RLS enabled
+    and FORCEd. `role_bypasses`: the connected role is a superuser or has BYPASSRLS, which Postgres exempts from every policy (then
+    the policies exist but do nothing for the app: use an ordinary owner role). `readonly_door_open`: this role is a real (inheriting)
+    member of a1p_readonly and not of a1p_readwrite, which the policies treat as a read-only auditor and let SELECT every row: the app's own
+    role must not be one. `effective` is: enforced, no bypass, door closed."""
+    want = RLS_MERCHANT + RLS_OPERATOR
+    rows = conn.execute("SELECT c.relname, c.relrowsecurity AS on_, c.relforcerowsecurity AS forced FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = ANY(%s)",
+                        (list(want),)).fetchall()
+    forced = sorted(r["relname"] for r in rows if r["on_"] and r["forced"])
+    role = conn.execute("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").fetchone()
+    bypasses = bool(role and (role["rolsuper"] or role["rolbypassrls"]))
+    enforced = len(forced) == len(want)
+    door = bool(conn.execute("SELECT pb_readonly_session() AS open").fetchone()["open"])   # the read-only door admits THIS role?
+    return {"enforced": enforced, "role_bypasses": bypasses, "readonly_door_open": door,
+            "effective": enforced and not bypasses and not door, "tables": forced, "missing": sorted(set(want) - set(forced))}

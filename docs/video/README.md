@@ -32,14 +32,32 @@ What it does:
    times of `narration.json`.
 5. It stops with an error if any scene is shorter than its narration + 0.7 s.
 
+Structure (problem first, about 8 minutes): 1 the problem and the three-colour diagram (PLATFORM = Postgres on AgentPG and its EDB extensions,
+REFERENCE SCAFFOLDING = sign-in, model gateway, secret vault, SAMPLE APP = PayBroker; the legend returns in the end card), 2 to 8 the core flow
+(setup, merchant, authorize, 3-D Secure, cascade, risky payment and case, webhooks), 9 to 13 **under the hood** (pgvector HNSW nearest cases, the
+fuzzystrmatch `NAME_MISMATCH` signal and the four built-in rules, masked views for a read-only role, Database insights), 14 try it yourself.
+Every under-the-hood scene opens with the customer's problem ("I am trying to X"), then shows the real SQL and the real output.
+
+Real versus captured: everything is a real run against the throwaway local Postgres (the recorder creates the `a1p_readonly` group role and the
+login role `reporting_reader` before `paybroker migrate`, to mimic what AgentPG provides, and preloads `pg_stat_statements`), except the two
+terminal cards in scene 13, which print the PayBroker blocks of `videos/live-captures/extensions-installed.txt` and `ecoctl-insights.txt` under a
+banner *CAPTURED from our live AgentPG fleet: not run in this video* (the instance id is dropped). The recorder fails if a capture block is missing.
+Local Postgres cannot show `edb_stat_monitor`, `edb_pg_tuner` or `query_advisor`; the narration says so.
+
 Voice plan (one accent, US; never the same voice in two consecutive topics, male and female alternate):
 
 | Topic | Scenes | Voice |
 |---|---|---|
-| What PayBroker is, first setup, the dashboard | 1, 2 | `am_eric` |
-| Connect a shop, send and read a payment | 3, 4, 5 | `af_heart` |
-| Test cards and the risky payment | 6, 7 | `am_michael` |
-| Rules, webhooks, recap | 8, 9, 10 | `af_bella` |
+| The problem, setup, the dashboard | 1, 2 | `am_eric` |
+| Merchant, authorize, the payment page | 3, 4, 5 | `af_heart` |
+| Test cards | 6 | `am_michael` |
+| The risky payment and its case | 7 | `af_bella` |
+| Webhooks | 8 | `am_adam` |
+| Nearest cases (pgvector) | 9 | `af_sarah` |
+| Name check and the rules | 10, 11 | `am_michael` |
+| Masking | 12 | `af_bella` |
+| Database insights | 13 | `am_adam` |
+| Try it yourself | 14 | `af_heart` |
 
 Writing narration: one `## <scene id> <voice>` section per scene; short sentences, one idea each; a blank line is a pause, `...` a
 short beat, `[pause 1.5]` a deliberate long pause where something happens on screen that the viewer should watch (a payment being
@@ -53,8 +71,8 @@ masked a second later; the terminal pages never print a key (the commands use sh
 
 Options: `--keep-recording` re-mixes a previous take in `--work`; `--reuse-audio` keeps the narration already spoken in
 `--work/audio`; `--tts-dir` points to another Kokoro tool folder (default `../../videos/tts` relative to the repository);
-`PACE=0.3` shortens the recorder's own waits (a rehearsal, not for the final cut); `REC_SHOTS=<dir>` saves a screenshot at every
-callout (a quick visual check); `BLOCKLIST_BEAT=1` adds the optional "same card again" beat of scene 7; `PB_PORT_RANGE` limits the
+`PACE=0.3` shortens the recorder's own waits (a rehearsal, not for the final cut; run it without `NARRATION_JSON` it does not wait for the sentences); `REC_SHOTS=<dir>` saves a screenshot at every
+callout (a quick visual check); `PB_PORT_RANGE` limits the
 ports; `HEADED=1` shows the browser. Rehearsal of the actions only: `PACE=0.3 REC_VIDEO=off npx playwright test` in this folder.
 
 Playwright's own ffmpeg build is not required: when `ffmpeg-<rev>` is missing from the Playwright browser cache, `build.py`
@@ -62,5 +80,5 @@ creates a private `PLAYWRIGHT_BROWSERS_PATH` under `--work` (links to the instal
 system `ffmpeg`). Nothing is downloaded. Needs: macOS, `ffmpeg`, Node 22+, Google Chrome, `npm install` in this folder, and the
 Kokoro tool folder with its own `.venv` and models (`videos/tts`).
 
-The terminal scenes (4, 6, 7, 9) are drawn as a terminal page in the same recording, with the real API answers. The setup code
+The terminal scenes (4, 6, 7, 8, 9, 10, 12, 13) are drawn as a terminal page in the same recording, with the real API answers and real `psql` output (a top bar tags what is PLATFORM, SAMPLE APP or CAPTURED). The setup code
 visible in scene 1 belongs to the throwaway server and is already used up when the video ends.

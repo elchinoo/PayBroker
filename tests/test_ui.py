@@ -23,7 +23,7 @@ def test_page_script(script):
 
 def test_every_page_has_a_regression_script():
     assert {"cases_typing.mjs", "overview_focus.mjs", "rules_typing.mjs", "merchants_typing.mjs", "settings_typing.mjs",
-            "payments_typing.mjs", "maintenance_panel.mjs", "triage_typing.mjs", "dialogs.mjs", "insights_tab.mjs"} <= set(SCRIPTS)
+            "payments_typing.mjs", "maintenance_panel.mjs", "triage_typing.mjs", "dialogs.mjs", "insights_tab.mjs", "audit_tab.mjs"} <= set(SCRIPTS)
 
 
 def test_the_pages_never_build_markup_from_strings():

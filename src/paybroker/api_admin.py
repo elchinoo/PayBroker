@@ -10,9 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import (
     accounts,
+    audit,
     auth,
     cases,
     demo,
+    hardening,
     insights,
     maintenance,
     merchants,
@@ -136,6 +138,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     read, review, manage_rules = Depends(require("payments:read")), Depends(require("cases:review")), Depends(require("rules:manage"))
     merch, settings = Depends(require("merchants:manage")), Depends(require("settings:manage"))
     wipe = Depends(require("data:reset"))
+    auditor = Depends(require("audit:read"))
 
     # ---- dashboard and payments ------------------------------------------------------------------------------
     @r.get("/overview", dependencies=[read])
@@ -164,11 +167,11 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             raise HTTPException(404, "payment not found")
         return out
 
-    @r.post("/payments/{payment_id}/chargeback", dependencies=[review])
-    def chargeback(payment_id: str, body: ChargebackBody):
+    @r.post("/payments/{payment_id}/chargeback")
+    def chargeback(payment_id: str, body: ChargebackBody, p=review):
         with connect() as conn:
             try:
-                return cases.record_chargeback(conn, payment_id, body.amount, body.reason, body.reason_code) | {"ok": True}
+                return cases.record_chargeback(conn, payment_id, body.amount, body.reason, body.reason_code, actor=_who(p)) | {"ok": True}
             except cases.CaseError as exc:
                 raise HTTPException(422, str(exc)) from exc
             finally:
@@ -186,7 +189,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     def resolve_case(case_id: int, body: ResolveBody, p=review):
         with connect() as conn:
             try:
-                return cases.resolve(conn, case_id, body.decision, body.note, p.actor)
+                return cases.resolve(conn, case_id, body.decision, body.note, _who(p))
             except cases.CaseError as exc:
                 conn.rollback()
                 raise HTTPException(422, str(exc)) from exc
@@ -213,24 +216,32 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             except psycopg.errors.UniqueViolation as exc:
                 conn.rollback()
                 raise HTTPException(409, "a rule with that name already exists") from exc
+            audit.record(conn, _who(p), "rule.create", str(row["id"]), {
+                "rule_id": row["id"], "name": body.name.strip(), "action": body.action, "enabled": True, "definition": body.definition})
             conn.commit()
         rules.invalidate()
         return {"id": row["id"]}
 
-    @r.patch("/rules/{rule_id}", dependencies=[manage_rules])
-    def patch_rule(rule_id: int, body: RulePatch):
+    @r.patch("/rules/{rule_id}")
+    def patch_rule(rule_id: int, body: RulePatch, p=manage_rules):
         with connect() as conn:
-            row = conn.execute("UPDATE fraud_rule SET enabled=%s WHERE id=%s RETURNING id", (body.enabled, rule_id)).fetchone()
+            row = conn.execute("UPDATE fraud_rule SET enabled=%s WHERE id=%s RETURNING id, name, action", (body.enabled, rule_id)).fetchone()
+            if row:
+                audit.record(conn, _who(p), "rule.enable" if body.enabled else "rule.disable", str(rule_id),
+                             {"rule_id": rule_id, "name": row["name"], "action": row["action"], "enabled": body.enabled})
             conn.commit()
         if not row:
             raise HTTPException(404, "rule not found")
         rules.invalidate()
         return {"id": rule_id, "enabled": body.enabled}
 
-    @r.delete("/rules/{rule_id}", dependencies=[manage_rules])
-    def delete_rule(rule_id: int):
+    @r.delete("/rules/{rule_id}")
+    def delete_rule(rule_id: int, p=manage_rules):
         with connect() as conn:
-            row = conn.execute("DELETE FROM fraud_rule WHERE id=%s RETURNING id", (rule_id,)).fetchone()
+            row = conn.execute("DELETE FROM fraud_rule WHERE id=%s RETURNING id, name, action, definition", (rule_id,)).fetchone()
+            if row:
+                audit.record(conn, _who(p), "rule.delete", str(rule_id), {"rule_id": rule_id, "name": row["name"], "action": row["action"],
+                                                                         "definition": row["definition"]})
             conn.commit()
         if not row:
             raise HTTPException(404, "rule not found")
@@ -256,7 +267,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     def decide_suggestion(suggestion_id: int, body: DecideBody, p=manage_rules):
         with connect() as conn:
             try:
-                return suggest.decide(conn, suggestion_id, body.approve, p.actor)
+                return suggest.decide(conn, suggestion_id, body.approve, _who(p))
             except rules.RuleError as exc:
                 conn.rollback()
                 raise HTTPException(422, str(exc)) from exc
@@ -268,21 +279,28 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             conn.rollback()
         return {"items": rows}
 
-    @r.post("/blacklist", status_code=201, dependencies=[review])
-    def add_blacklist(body: BlacklistBody):
+    @r.post("/blacklist", status_code=201)
+    def add_blacklist(body: BlacklistBody, p=review):
         with connect() as conn:
             row = conn.execute("INSERT INTO blacklist (kind, value, reason) VALUES (%s,%s,%s) ON CONFLICT (kind, value) DO NOTHING RETURNING id",
                                (body.kind, body.value.strip(), body.reason)).fetchone()
+            if row:
+                audit.record(conn, _who(p), "blocklist.add", str(row["id"]), {
+                    "entry_id": row["id"], "kind": body.kind, "value": audit.mask_value(body.kind, body.value.strip()),
+                    "reason": body.reason, "source": "manual"})
             conn.commit()
         if not row:
             raise HTTPException(409, "that entry is already blocked")
         rules.invalidate()
         return {"id": row["id"]}
 
-    @r.delete("/blacklist/{entry_id}", dependencies=[review])
-    def delete_blacklist(entry_id: int):
+    @r.delete("/blacklist/{entry_id}")
+    def delete_blacklist(entry_id: int, p=review):
         with connect() as conn:
-            row = conn.execute("DELETE FROM blacklist WHERE id=%s RETURNING id", (entry_id,)).fetchone()
+            row = conn.execute("DELETE FROM blacklist WHERE id=%s RETURNING id, kind, value", (entry_id,)).fetchone()
+            if row:
+                audit.record(conn, _who(p), "blocklist.remove", str(entry_id),
+                             {"entry_id": entry_id, "kind": row["kind"], "value": audit.mask_value(row["kind"], row["value"])})
             conn.commit()
         if not row:
             raise HTTPException(404, "entry not found")
@@ -369,6 +387,23 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             conn.rollback()
         return {"items": rows}
 
+    # ---- audit ledger (admin only) ---------------------------------------------------------------------------------
+    @r.get("/audit", dependencies=[auditor])
+    def audit_entries(limit: int = Query(50, ge=1, le=500), subject: str | None = Query(None, min_length=1, max_length=120)):
+        """The newest ledger entries (payloads are masked when written: no card data, secrets, full IPs or raw customer ids)."""
+        with connect() as conn:
+            return {"items": audit.recent(conn, limit, subject)}
+
+    @r.get("/audit/verify", dependencies=[auditor])
+    def audit_verify():
+        """Recompute the whole hash chain in the database: intact (with the entry count and the head hash, which can be written
+        down elsewhere), or the first broken entry and why. Also says whether row-level security binds the connected role."""
+        with connect() as conn:
+            out = audit.verify(conn)
+            out["row_level_security"] = hardening.rls_status(conn)
+            conn.rollback()
+        return out
+
     # ---- connectors ----------------------------------------------------------------------------------------------
     @r.get("/connectors", dependencies=[read])
     def connectors():
@@ -378,11 +413,13 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             conn.rollback()
         return {"items": rows}
 
-    @r.patch("/connectors/{name}", dependencies=[merch])
-    def patch_connector(name: str, body: ConnectorPatch):
+    @r.patch("/connectors/{name}")
+    def patch_connector(name: str, body: ConnectorPatch, p=merch):
         from . import routing
         with connect() as conn:
             row = conn.execute("UPDATE psp_connector SET enabled=%s WHERE name=%s RETURNING name", (body.enabled, name)).fetchone()
+            if row:
+                audit.record(conn, _who(p), "connector.update", name, {"connector": name, "enabled": body.enabled})
             conn.commit()
         if not row:
             raise HTTPException(404, "connector not found")

@@ -104,8 +104,9 @@ def test_reset_deletes_exactly_the_transaction_tables_and_keeps_the_configuratio
     for t in maintenance.TABLES:
         assert after[t] == 0 and out["deleted"][t] == before[t], t
     for t, n in before.items():                                      # every other table is exactly as it was
-        if t not in maintenance.TABLES and t != "admin_audit":
+        if t not in maintenance.TABLES and t not in ("admin_audit", "audit_ledger"):
             assert after[t] == n, f"{t} must be kept"
+    assert after["audit_ledger"] == before["audit_ledger"] + 2       # never wiped: the reset adds its own start and finish entries
     assert resets() == 1                                              # (other audit rows, like merchant keys, are not resets)
     assert set(before) - set(maintenance.TABLES) <= set(maintenance.KEPT), "KEPT documents every table a reset leaves alone"
     assert out["seconds"] >= 0 and out["max_chunk_rows"] <= maintenance.CHUNK

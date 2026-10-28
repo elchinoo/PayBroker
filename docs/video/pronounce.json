@@ -1,1 +1,4 @@
-{"402": "four oh two", "idempotency": "eye-dem-poh-ten-see", "webhook": "web hook", "Acme": "Ack-me"}
+{"402": "four oh two", "idempotency": "eye-dem-poh-ten-see", "webhook": "web hook", "Acme": "Ack-me",
+ "fuzzystrmatch": "fuzzy string match", "edb_stat_monitor": "E D B stat monitor", "edb_pg_tuner": "E D B P G tuner",
+ "query_advisor": "query advisor", "pg_stat_statements": "P G stat statements", "EDB": "E D B", "HNSW": "H N S W", "tcn": "T C N",
+ "pg_trgm": "P G trigram", "Smyth": "Smith", "Jon": "John"}

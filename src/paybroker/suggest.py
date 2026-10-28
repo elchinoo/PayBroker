@@ -10,7 +10,7 @@ import statistics
 
 from psycopg.types.json import Jsonb
 
-from . import accounts, rules, vault
+from . import accounts, audit, rules, vault
 from . import settings_store as store
 from .chat import chat
 from .llm_http import LLMError
@@ -147,5 +147,8 @@ def decide(conn, suggestion_id: int, approve: bool, actor: str) -> dict:
                                (name, s["rationale"], Jsonb(s["definition"]), s["action"], f"approved by {actor}"[:60])).fetchone()["id"]
         rules.invalidate()
     conn.execute("UPDATE rule_suggestion SET status=%s, decided_at=now() WHERE id=%s", ("approved" if approve else "rejected", suggestion_id))
+    audit.record(conn, actor, "rule.suggestion_approve" if approve else "rule.suggestion_reject", str(rule_id or suggestion_id),
+                 {"suggestion_id": suggestion_id, "rule_id": rule_id, "name": s["name"], "action": s["action"],
+                  "definition": s["definition"], "source": s["source"]})
     conn.commit()
     return {"id": suggestion_id, "status": "approved" if approve else "rejected", "rule_id": rule_id}

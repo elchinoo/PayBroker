@@ -12,7 +12,8 @@ from apgkit.auth import Principal
 from apgkit.ids import sha256
 from psycopg.types.json import Jsonb
 
-from . import core
+from . import audit, core
+from .db import system_conn
 
 local = core.local
 SECRET_PREFIX, PUBLISHABLE_PREFIX = core.SECRET_PREFIX, core.PUBLISHABLE_PREFIX
@@ -50,6 +51,8 @@ def create_merchant_key(conn, merchant_id: str, kind: str, name: str = "", actor
                        "RETURNING id", (merchant_id, kind, name[:60], raw[:12], sha256(raw))).fetchone()
     _audit(conn, actor, "merchant.key_create", {"merchant_id": merchant_id, "key_id": row["id"], "kind": kind, "name": name[:60],
                                                 "prefix": raw[:12]})
+    audit.record(conn, actor, "merchant.key_create", merchant_id,
+                 {"merchant_id": merchant_id, "key_id": row["id"], "kind": kind, "name": name[:60]})   # not even the prefix: it holds random characters
     conn.commit()
     return row["id"], raw
 
@@ -103,13 +106,15 @@ def revoke_merchant_key(conn, merchant_id: str, key_id: int, actor: str | None =
     if row:
         _audit(conn, actor, "merchant.key_revoke", {"merchant_id": merchant_id, "key_id": key_id, "kind": row["kind"], "name": row["name"],
                                                     "prefix": row["prefix"]})
+        audit.record(conn, actor, "merchant.key_revoke", merchant_id,
+                     {"merchant_id": merchant_id, "key_id": key_id, "kind": row["kind"], "name": row["name"]})
     conn.commit()
     forget_keys()
     return row is not None
 
 
 def _resolve_merchant_key(raw: str) -> Principal | None:
-    with core.db.pool().connection() as conn:
+    with system_conn() as conn:       # authenticating: the merchant is what this lookup finds out, so it cannot be scoped to one yet
         return merchant_principal(conn, raw)
 
 

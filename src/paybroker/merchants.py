@@ -3,6 +3,7 @@ import secrets
 
 from psycopg.types.json import Jsonb
 
+from . import audit as ledger
 from . import auth, origins, vault
 from .ids import new_id
 from .netguard import UnsafeURL, check_url
@@ -98,6 +99,7 @@ def create(conn, name: str, settings: dict | None = None, allowed_origins: list[
     audit(conn, actor, "merchant.create", {"merchant_id": mid, "name": name})
     if o:
         _audit_origins(conn, actor, mid, [], o)
+    ledger.record(conn, actor, "merchant.create", mid, {"merchant_id": mid, "name": name, "allowed_origins": o})
     conn.commit()
     return get(conn, mid)
 
@@ -131,6 +133,11 @@ def update(conn, merchant_id: str, *, name: str | None, status: str | None, sett
                  ((name or cur["name"]).strip()[:100], status or cur["status"], Jsonb(s), o, merchant_id))
     if o != cur["allowed_origins"]:
         _audit_origins(conn, actor, merchant_id, cur["allowed_origins"], o)
+    new_name = (name or cur["name"]).strip()[:100]
+    ledger.record(conn, actor, "merchant.update", merchant_id, {
+        "merchant_id": merchant_id, "status": {"from": cur["status"], "to": status or cur["status"]},
+        "name_changed": new_name != cur["name"], "allowed_origins": {"from": cur["allowed_origins"], "to": o},
+        "settings_changed": sorted(k for k in s if s.get(k) != cur["settings"].get(k))})
     conn.commit()
     return get(conn, merchant_id)
 
@@ -142,6 +149,8 @@ def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") 
     if not url:
         conn.execute("UPDATE merchant SET webhook_url=NULL, webhook_secret_enc=NULL WHERE id=%s", (merchant_id,))
         audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": None})
+        ledger.record(conn, actor, "merchant.webhook", merchant_id,
+                      {"merchant_id": merchant_id, "from": ledger.origin(old), "to": None})
         conn.commit()
         return get(conn, merchant_id), None
     if not vault.is_initialized(conn):
@@ -154,6 +163,8 @@ def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") 
     conn.execute("UPDATE merchant SET webhook_url=%s, webhook_secret_enc=%s WHERE id=%s",
                  (url, vault.encrypt(secret), merchant_id))
     audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": url, "secret_rotated": True})
+    ledger.record(conn, actor, "merchant.webhook", merchant_id,
+                  {"merchant_id": merchant_id, "from": ledger.origin(old), "to": ledger.origin(url), "secret_rotated": True})
     conn.commit()
     return get(conn, merchant_id), secret
 

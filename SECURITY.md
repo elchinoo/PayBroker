@@ -102,6 +102,6 @@ PCI-certified and must not be used with real card data. The model below is what 
 ## Known limits
 - Simulated connectors and a test-mode 3-D Secure page that anyone with the challenge id can complete.
 - In-memory rate limits and caches are per process.
-- The only audit log of operator actions is `admin_audit` (data resets); otherwise there are case notes, rule authorship and webhook history (the identity provider keeps sign-in audit).
+- Operator and merchant actions are recorded in `admin_audit` (resets, merchants, keys, origins, webhooks, triage settings) and in the tamper-evident `audit_ledger` (every payment decision and governed change, hash-chained, verifiable: GUIDE section 18). The table owner or a superuser can still tamper with the ledger; that is detected by `audit_verify()`, not prevented, and only an externally stored head hash catches a full rewrite. Row-level security separates merchants in the database but does not bind a superuser or a `BYPASSRLS` role, and the context it relies on is a session setting the application's own role could change (GUIDE section 18.5). The identity provider keeps sign-in audit.
 - The sample model is not a measure of real fraud risk, and a model uploaded by an admin is only as good as the data it came from.
 - The training-capture setting and the active-model choice are cached per process for 30 seconds; another instance follows within that time.

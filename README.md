@@ -37,8 +37,9 @@ triage), a **card vault** that takes test cards only, **signed webhooks**, a web
 - **Webhooks:** `payment.authorized`, `.captured`, `.declined`, `.refunded` and others, signed with HMAC-SHA256, retried with
   back-off for about a day (seven attempts: 30 s, 5 min, 30 min, 2 h, 6 h, 15 h), every attempt visible.
 - **3-D Secure:** a hosted, simulated issuer page where the tester picks the outcome.
+- **Governance in the database:** a tamper-evident **audit ledger** (every payment decision, capture, refund, 3-D Secure result, rule, key and blocklist change is a SHA-256-chained entry written in the same transaction; `audit_verify()` or the dashboard's Audit tab names the first entry that was altered) and **row-level security** (one merchant's request cannot see another's rows, even through a query with no filter; fails closed). Core Postgres only. [docs/GUIDE.md section 18](docs/GUIDE.md#18-database-layer-governance-an-audit-ledger-you-can-verify-and-row-level-security) says what the database enforces, how to verify it and the limits.
 - **Dashboard** at `/`: overview, payments with a full explanation of every decision, fraud cases, rules and suggestions,
-  merchants, routing, settings. **MCP server** at `/mcp` with read-only tools so an assistant can investigate but never decide.
+  merchants, routing, settings, audit (admin). **MCP server** at `/mcp` with read-only tools so an assistant can investigate but never decide.
 - **Prometheus** at `/metrics` (a metrics-only token): the fleet's shared families plus `payment_broker_*`.
 - **Sign-in:** standalone (a setup code and an admin password) or **single sign-on** with the ecosystem
   [identity provider](https://github.com/elchinoo/identity), with roles. Built on [agentpg-kit](https://github.com/elchinoo/agentpg-kit).
@@ -516,4 +517,5 @@ See [SECURITY.md](SECURITY.md) for the security model and its limits, and [API.m
 
 - [docs/GUIDE.md](docs/GUIDE.md): the complete guide (ecosystem interactions, architecture, install, configuration, operations, troubleshooting, testing, AIDB and AgentPG).
 - [docs/GUIDE.md section 17](docs/GUIDE.md#17-edb-and-agentpg-capabilities-used-by-this-app): the EDB and AgentPG capabilities this app uses (database insights, masked views for read-only access, a `fuzzystrmatch` name-mismatch risk signal).
+- [docs/GUIDE.md section 18](docs/GUIDE.md#18-database-layer-governance-an-audit-ledger-you-can-verify-and-row-level-security): the audit ledger and row-level security, with how to verify them and what EDB Postgres Advanced Server adds that AgentPG cannot use today.
 - [docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md): script and recording notes for a six-minute tutorial video.

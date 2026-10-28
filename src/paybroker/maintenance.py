@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 from psycopg.types.json import Jsonb
 
-from . import routing, rules, training_data
+from . import audit, routing, rules, training_data
 from .db import connect
 
 PHRASE = "RESET PAYBROKER DATA"
@@ -43,6 +43,7 @@ TABLES = tuple(t for t, _ in STEPS)
 KEPT = (
     "merchant", "merchant_key", "card", "psp_connector", "fraud_rule", "blacklist", "llm_account", "model_version",
     "app_setting", "web_session", "oidc_login", "api_token", "admin_audit", "triage_llm_call", "schema_migrations",
+    "audit_ledger", "audit_ledger_head",      # the tamper-evident ledger is never wiped: a reset adds its own entries to it
 )
 
 
@@ -104,6 +105,7 @@ def reset(*, actor: str, include_training_data: bool = True, include_rule_sugges
             raise ResetBusy("another reset is already running; wait for it to finish")
         audit_id = conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s) RETURNING id",
                                 (actor[:120], ACTION, Jsonb({"status": "running", **options}))).fetchone()["id"]
+        audit.record(conn, actor, "admin.data_reset", str(audit_id), {"status": "started", **options})
         conn.commit()
         try:
             for table in steps:
@@ -120,10 +122,10 @@ def reset(*, actor: str, include_training_data: bool = True, include_rule_sugges
                         on_chunk(table, n)
         except BaseException as exc:
             conn.rollback()
-            _finish_audit(conn, audit_id, {"status": "interrupted", "deleted": deleted, "error": type(exc).__name__, **options})
+            _finish_audit(conn, audit_id, actor, {"status": "interrupted", "deleted": deleted, "error": type(exc).__name__, **options})
             raise
         seconds = round(time.monotonic() - started, 2)
-        _finish_audit(conn, audit_id, {"status": "completed", "deleted": deleted, "skipped": skipped, "seconds": seconds,
+        _finish_audit(conn, audit_id, actor, {"status": "completed", "deleted": deleted, "skipped": skipped, "seconds": seconds,
                                        **stats, **options})
     finally:
         try:
@@ -136,11 +138,13 @@ def reset(*, actor: str, include_training_data: bool = True, include_rule_sugges
     return {"deleted": deleted, "skipped": skipped, "seconds": seconds, "audit_id": audit_id, **stats}
 
 
-def _finish_audit(conn, audit_id: int | None, detail: dict) -> None:
+def _finish_audit(conn, audit_id: int | None, actor: str, detail: dict) -> None:
     if audit_id is None:
         return
     try:
         conn.execute("UPDATE admin_audit SET detail=%s WHERE id=%s", (Jsonb(detail), audit_id))
+        # the ledger is never wiped by a reset: it records that the reset happened and how many rows it removed
+        audit.record(conn, actor, "admin.data_reset", str(audit_id), detail)
         conn.commit()
     except Exception:  # noqa: BLE001 - the audit row stays "running"; never mask the real outcome
         conn.rollback()

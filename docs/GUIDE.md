@@ -29,6 +29,7 @@ the difference is listed under [Known limitations](#16-known-limitations).
 15. [Data model at a glance](#15-data-model-at-a-glance)
 16. [Known limitations](#16-known-limitations)
 17. [EDB and AgentPG capabilities used by this app](#17-edb-and-agentpg-capabilities-used-by-this-app)
+18. [Database-layer governance: audit ledger and row-level security](#18-database-layer-governance-an-audit-ledger-you-can-verify-and-row-level-security)
 
 ---
 
@@ -637,6 +638,7 @@ Permissions are what the code checks; roles (people, from identity) and token sc
 | `training:export` | Training statistics and export (admin only) |
 | `model:manage` | Capture and retention settings, label aging, purge, upload, activate and delete models (admin only) |
 | `data:reset` | Wipe the transaction data (admin only) |
+| `audit:read` | Read the audit ledger and verify its chain (admin only; section 18) |
 | `mcp:use` | Use `/mcp` |
 | `metrics:scrape` | Read `/metrics` |
 | `payments:write`, `vault:tokenize` | Merchant keys only: secret key has both, publishable key only `vault:tokenize` |
@@ -679,6 +681,7 @@ SECURITY.md is the authoritative model; the points an operator should know:
   unknown fields are rejected; writes under `/api/` without an `Authorization` header need the `X-PayBroker-CSRF` header.
 - **Rate limits** on failed credentials: 10 per minute per address, in memory, per process. Put proxy-level limits in front, including for tokenization from browsers.
 - **Verify what PayBroker sends you.** Check webhook and 3-D Secure return signatures over the raw bytes, in constant time, with a five-minute freshness window; deduplicate on event id.
+- **Defence in depth in the database.** Row-level security keeps one merchant's request from another merchant's rows even if a query forgets its filter, and a hash-chained audit ledger records every decision; both are described, with their limits, in section 18.
 - **Exports are sensitive.** The training export is derived behavioural data joinable to payments by id: treat the file like the database.
 - **Reporting.** Use GitHub private vulnerability reporting, not a public issue.
 
@@ -869,6 +872,7 @@ Unchanged by the plan: Tier 1 rules, the Tier 2 model (classical ML scoring is n
 | `llm_account`, `triage_llm_call` | AI accounts (keys encrypted) and the 7-day log of model calls |
 | `training_example`, `model_version` | Opt-in training rows and uploaded models |
 | `admin_audit` | Who changed what (merchant, key, origin, webhook, triage settings, data resets), never a secret |
+| `audit_ledger`, `audit_ledger_head` | The tamper-evident ledger: a SHA-256 hash chain of every decision and governed change, written in the same transaction (section 18) |
 | `app_setting`, `web_session`, `api_token`, `oidc_login`, `schema_migrations` | Kit tables: settings and vault material, sessions, operator tokens, SSO state, applied migrations |
 
 ## 16. Known limitations
@@ -898,7 +902,7 @@ Everything here was found while checking this guide against the code. The code-v
 - The live fleet's current behaviour, URLs or versions (they change on recreate).
 - The exact visual layout of the dashboard beyond the labels and element ids read from `src/paybroker/static/*.js` and `index.html`.
 - The kit's shared pages (setup, login, vault banner) beyond the element ids used by the ecosystem's end-to-end harness (`#setup-code`, `#setup-pw`, `#setup-pw2`, `#login-pw`).
-- Any Postgres version other than the `pgvector/pgvector:pg17` image the compose file and CI use.
+- Any Postgres version other than the `pgvector/pgvector:pg17` image the compose file and CI use (the ledger and row-level security were run on a local PostgreSQL 17.5, as a superuser and as an ordinary owner role, never on a live AgentPG instance).
 
 ## 17. EDB and AgentPG capabilities used by this app
 
@@ -932,7 +936,7 @@ does not exist, and must run as the owner of the tables (the app's own connectio
 | `fraud_case` | `fraud_case_masked` | `note` redacted, `resolved_by` reduced to an initial |
 | `admin_audit` | `admin_audit_masked` | `actor` reduced to an initial |
 | `webhook_event` | `webhook_event_masked` | event type, status, attempts, codes; the body (it holds the 3-D Secure link) not exposed |
-| `fraud_assessment`, `fraud_rule`, `rule_suggestion`, `psp_connector`, `outbox`, `model_version`, `training_example`, `triage_llm_call`, `schema_migrations` | the table itself | configuration and numbers, no personal data |
+| `fraud_assessment`, `fraud_rule`, `rule_suggestion`, `psp_connector`, `outbox`, `model_version`, `training_example`, `triage_llm_call`, `schema_migrations`, `audit_ledger`, `audit_ledger_head` | the table itself | configuration and numbers, no personal data (ledger payloads are masked when written, section 18) |
 | `app_setting` (kit settings and vault store), `web_session`, `api_token`, `oidc_login`, `merchant_key`, `llm_account` | nothing | secrets, hashes or ciphertext: SELECT revoked, **no view** |
 
 PayBroker never stores a card number, CVV, customer email (only its domain, in `request.email_domain`) or a person's name from the payment API, so the masks there are defence in depth. Limits:
@@ -953,3 +957,130 @@ they run under PayBroker's permission scopes and return curated shapes, while th
 ### 17.4 fuzzystrmatch
 
 `NAME_MISMATCH`, section 7.9. Other extensions the platform offers (`unaccent`, `citext`, `tcn`, `postgis`) are not used by PayBroker.
+
+## 18. Database-layer governance: an audit ledger you can verify, and row-level security
+
+Two things PayBroker enforces **in the database**, with core Postgres only (`sha256()`, jsonb, triggers, privileges, row-level security): no `pgcrypto`, `pgaudit` or `data_redaction`, and no superuser.
+AgentPG's probe refused the superuser-only extensions (`data_redaction` among them, `ecosystem/docs/06-edb-and-agentpg-capabilities.md`), so nothing here depends on one. Migrations `007` and `008`; code in `src/paybroker/audit.py`, `db.py`, `hardening.py`.
+
+### 18.1 What the database enforces and what the application does
+
+| Rule | Enforced by | The application's part |
+|---|---|---|
+| An audit entry exists for every payment decision and every governed change | **the same transaction**: the entry is a statement inside it, so the change and its entry commit or roll back together | calls `audit.record(...)` as the last statement before each commit (it is the code that decides *what* to write) |
+| An entry cannot be changed, removed or the table emptied | privileges (UPDATE, DELETE, TRUNCATE revoked from PUBLIC and from the owner role) **and** a trigger that raises, two independent layers | nothing |
+| Entries form one linear, gapless chain, even with concurrent payments | the head row's lock in `audit_append()` (SQL) | nothing |
+| A changed, removed, inserted or cut-off entry is found | `audit_verify()` (SQL): recomputes every hash | `GET /api/audit/verify` and the Audit tab only call it |
+| A payload never holds card data or a secret | trigger `audit_ledger_guard` refuses secret-named fields and card-number-looking values | builds payloads from the masking rules (hashes, last four, truncated IPs) so the guard never has to fire |
+| A merchant's request sees only that merchant's rows | **row-level security**, `FORCE`d, policies on `app.merchant_id` | sets `app.merchant_id` per request from the authenticated API key (`db.merchant_conn`) |
+| Anything that sets no context sees nothing (fail closed) | the same policies | uses `db.connect()` (operator bypass) only where there is no merchant |
+| Who may read the ledger through the API | the application (`audit:read`, admin only) | |
+
+### 18.2 The audit ledger
+
+Table `audit_ledger` (`seq`, `ts`, `actor`, `action`, `subject`, `payload` jsonb, `prev_hash`, `hash`) and a one-row table `audit_ledger_head`. Each entry:
+
+```
+hash(n) = sha256( hash(n-1) || [seq, ts (UTC, microseconds), actor, action, subject, payload]::jsonb::text )        hash(0) = 64 zeros
+```
+
+jsonb's text form is canonical (keys sorted, numbers normalised), so the same record always hashes the same. `audit_append()` locks the head row, takes `seq = head.seq + 1`, inserts, and moves the head:
+writers queue on that row, so the chain cannot fork and, because a rolled-back transaction gives its number back, it has **no gaps** (a missing `seq` is itself evidence). The append is the last statement before
+each `COMMIT`, so the lock is held for one round trip. `seq` is an ordinary `bigint` for that reason, not a `bigserial` (sequences leave gaps on rollback).
+
+**What is written** (action names; actor in brackets): `payment.authorize` (the decision, score, rules fired, reasons, connector, masked card and customer; `merchant:<id>`), `payment.refused` (an authorization
+refused before it became a payment: currency not allowed, unknown card token, no route; the payment itself rolls back, the refusal stays on record), `payment.captured`, `payment.voided`, `payment.refunded`,
+`payment.3ds_complete` (`issuer:3ds-page`: the hosted page has no login), `rule.create|enable|disable|delete|suggestion_approve|suggestion_reject`, `blocklist.add|remove` (also from a resolved case),
+`case.resolve`, `chargeback.record`, `merchant.create|update|webhook|key_create|key_revoke`, `connector.update`, `admin.data_reset` (start and finish; a reset never touches the ledger). Operator actors are the
+person's name or the service's client id. Not written: configuration seeded at start-up, model activation, LLM account and vault changes (candidates for a next round).
+
+**What is never written:** card numbers, CVCs, API keys or key prefixes, webhook secrets, full IPs (`203.0.113.xxx`), raw customer ids (12-hex hashes, the same mask as `*_masked`), webhook URLs beyond their origin.
+`audit_ledger_guard` refuses a payload with a field called `number`, `cvc`, `cvv`, `pan`, `password`, `secret`, `api_key`... or a value that is a 13 to 19 digit number (tested).
+
+**Verify, three ways.**
+
+```sql
+SELECT audit_verify();                 -- NULL when intact, else the first broken seq
+SELECT * FROM audit_verify_detail();   -- entries, first_broken, reason, head_seq, head_hash
+```
+
+`GET /api/audit/verify` returns `{intact, entries, first_broken, reason, head: {seq, hash}, row_level_security}` and the **Audit** tab (admin only) has a *Verify the chain* button showing "Chain intact, N entries" or the first
+broken entry (highlighted in the list) and why. `GET /api/audit?limit=&subject=` lists the newest entries. A read-only database login (`a1p_readonly`) can read both tables and run `audit_verify()`, so an
+auditor needs no application. What each failure looks like: a changed entry is reported at its own `seq`; a forger who also recomputes that hash is caught at the next entry; a deleted entry shows as a hole at the entry after it;
+entries cut off the end are caught by the head row; a forged extra entry fails its parent link.
+
+**Try the tamper yourself** (as the table owner; this is exactly what the tests do on a throwaway database):
+
+```sql
+GRANT UPDATE ON audit_ledger TO CURRENT_USER;                       -- 1. privileges say no ...
+UPDATE audit_ledger SET payload = jsonb_set(payload, '{amount}', '1') WHERE seq = 42;   -- ERROR: UPDATE on audit_ledger is not allowed: the audit ledger is append-only   (2. ... and so does the trigger)
+ALTER TABLE audit_ledger DISABLE TRIGGER audit_ledger_no_change;    -- the owner can switch the trigger off
+UPDATE audit_ledger SET payload = jsonb_set(payload, '{amount}', '1') WHERE seq = 42;   -- UPDATE 1
+ALTER TABLE audit_ledger ENABLE TRIGGER audit_ledger_no_change;
+SELECT audit_verify();                                              -- 42
+```
+
+### 18.3 Row-level security
+
+Policies exist on every table whose rows belong to a merchant, on the operator-only tables, and nowhere else; all are `ENABLE`d and `FORCE`d, so they bind the table owner (the application's own role).
+
+| Scope | Tables | Policy |
+|---|---|---|
+| Merchant's own rows | `merchant` (by `id`), `merchant_key`, `card`, `transaction`, `webhook_event` | `app.bypass = 'on'` **or** `merchant_id = app.merchant_id`; reads and writes (a merchant cannot insert or move a row to another merchant) |
+| Through the payment | `three_ds_challenge`, `fraud_assessment` | visible when the payment they belong to is (`pb_payment_visible()`, which repeats `transaction`'s test) |
+| Operator only | `fraud_case`, `chargeback`, `admin_audit` | `app.bypass = 'on'`; a merchant context sees none. One exception: the payment pipeline may **insert** a case for a payment it owns (flagged payments open a case) but cannot read it back |
+| Read-only auditors | all of the above, SELECT only | a login that inherits `a1p_readonly` and not `a1p_readwrite` (so the masked views keep working for it; see the limits) |
+
+**How the context is set** (`src/paybroker/db.py`, the only place): `db.connect()` (a plain connection used by every dashboard route, the worker, the CLI, MCP, the hosted 3-D Secure page, maintenance) sets
+`app.bypass = on`. `db.merchant_conn(merchant_id)` (the payment API: tokenize, authorize, capture, void, refund, get, list) sets `app.merchant_id` from the authenticated key. `db.system_conn()` (API key lookup, which happens before a
+merchant is known, and the CORS origin check, which spans merchants) sets the bypass on a pooled connection. The settings are session level, set outside the transaction (so a rollback cannot undo them) and cleared before a pooled connection
+returns; the raw `db.pool()` sets nothing and therefore sees nothing. Cost: one extra round trip before and one after a merchant request.
+
+**Deliberately not under RLS, and why:** `fs_entity` (the fraud feature store links customers, devices, cards and IPs *across* merchants: that is how fraud rings are found, and its ids are hashed or IPs on a masked view);
+`outbox` (a global queue, no merchant column); `training_example`, `triage_llm_call`, `fraud_rule`, `rule_suggestion`, `blacklist`, `psp_connector`, `model_version`, `llm_account`, `app_setting`, `web_session`, `api_token`, `oidc_login`
+(configuration or operator data no merchant request reads: the application code is the only guard, and the read-only role already has them hidden or masked, section 17.2); `audit_ledger` and its head (written
+by every request, read only by admin routes, payloads masked at write time: adding a read policy would stop the owner tampering test from being meaningful without protecting anything). None of these needed a half-measure; each is a decision, not an omission.
+
+Performance: each setting is read through `(SELECT current_setting(...))`, evaluated once per statement, not per row; `transaction(merchant_id, created_at)` already existed and migration `008` adds indexes on `card(merchant_id)` and
+`merchant_key(merchant_id)` (`webhook_event` has one). Child-table checks call a `STABLE` function per row only for a merchant context; the operator path short-circuits on the bypass.
+
+### 18.4 How to verify
+
+```bash
+.venv/bin/pytest tests/test_audit_db.py tests/test_rls_db.py tests/ui/ -q      # with TEST_DATABASE_URL set (a throwaway database whose name ends in test)
+node tests/ui/audit_tab.mjs
+```
+
+`tests/test_audit_db.py` tampers with rows as the table owner (trigger off, privilege granted back) and proves `audit_verify()` reports exactly that `seq` for every column, for a re-hashed row, for a removed row, a removed tail and an inserted
+row; 120 concurrent writers produce one linear chain; concurrent payments too; an entry rolls back with its change; payloads hold no card data, key, IP or raw id. `tests/test_rls_db.py` connects as an **ordinary login role**
+(Postgres exempts superusers, and the CI database user is one) and proves: unset context sees nothing and writes nothing, merchant A cannot read or write B's rows even with a query that has no `WHERE`, the operator bypass sees all, a bad bypass value opens nothing, the
+whole application keeps working as an ordinary role, a handler that forgets the merchant filter returns 404 instead of another merchant's payment, workers and the 3-D Secure page still work. When the test database role is itself an ordinary owner, one more test proves `FORCE` binds it.
+`GET /api/audit/verify` also reports `row_level_security: {enforced, role_bypasses, readonly_door_open, effective}`: **if `effective` is false the policies exist but do nothing for the application**.
+
+### 18.5 Honest limits
+
+- **The owner and superuser can still tamper**: they can switch the trigger off, re-grant, and edit rows. That is not prevented; it is *detected* (18.2). What the chain cannot detect on its own: someone who rewrites every entry from the first
+  one they changed to the end **and** moves the head. Write the head hash (`GET /api/audit/verify` shows it) somewhere the database owner cannot reach (a log line, a ticket, another system) on a schedule, and compare. Without an external anchor this is tamper-*evident* against partial edits, not against a full rewrite.
+- **Not a boundary against arbitrary SQL by the application's own role.** The merchant and bypass settings are ordinary session settings: code that can run any SQL on the connection can set them. RLS here stops a missing `WHERE`, a wrong id or a copy-pasted query, which are the real bugs; it is not a substitute for not running untrusted SQL as the application. A separate low-privilege role for merchant requests (so the bypass is not available to it at all) is the next step and is not built: it needs a role the platform provisions.
+- **Superusers and `BYPASSRLS` roles ignore RLS.** If the application connects as one, the policies are inert; the verify endpoint says so (`role_bypasses`). Run the application as an ordinary owner.
+- **The read-only door.** Masked views run as their owner, so they need a way to tell a read-only auditor from the application. The policies admit sessions that inherit `a1p_readonly` and not `a1p_readwrite`. If a platform made the application role inherit `a1p_readonly` only, the door would be open to it: `readonly_door_open` reports that. Not verified on a live AgentPG instance (section 16).
+- **Serialisation.** Appends are serialised on one row, held for the last round trip of each transaction: throughput on that path is bounded by commit latency (the lock is held for that one round trip). Not benchmarked here.
+- **One database round trip more** before and after each merchant request for the context.
+- **Idempotent replays and reads write nothing**; a payment that fails before it is stored leaves a `payment.refused` entry, an HTTP-level rejection (bad key, validation) leaves none.
+- **The hosted 3-D Secure page is unauthenticated** (a test-mode simulation) and acts with the operator bypass for lack of a merchant; its entries say `issuer:3ds-page`.
+- **Reset and wipe**: the data reset never deletes the ledger; a `DROP SCHEMA` or a restore from an older backup of course does.
+- **Roles that read the hosted MCP**: AgentPG's hosted MCP session runs as a read-write group role (section 3 of the ecosystem document). It is not the owner and sets no context, so RLS shows it **no rows** of the merchant tables. Expected from the design, not tried on a live instance.
+
+### 18.6 What EDB Postgres Advanced Server adds that AgentPG instances cannot use today
+
+Taken from the probe in `ecosystem/docs/06-edb-and-agentpg-capabilities.md` (AgentPG, checked 2026-10-28) and EDB's product documentation; the EDB Postgres Advanced Server side is **not exercised in this repository**.
+
+| Need | Here, with core Postgres | EDB Postgres Advanced Server (EPAS) | On AgentPG today |
+|---|---|---|---|
+| Hide columns from some readers by policy | masked views and revoked base tables (17.2): enforced by grants, the reader must be pointed at the view | `data_redaction` / `DBMS_REDACT`: redaction policies on the table itself, so the same query returns masked values per role | `data_redaction` is refused (`Must be superuser to create this extension`) |
+| Audit who ran what | the ledger above: *application-level* decisions and changes, tamper-evident | EDB Audit (`edb_audit` settings: statements, connections, DDL, per role or object, to files or CSV), plus Oracle-style `AUDIT` | no superuser, so no server-level audit settings and no `pgaudit` |
+| Prove nothing was changed | hash chain, verified in SQL | audit files are outside the database and carry the server's own view of every statement, which complements (does not replace) a ledger of business decisions | not available |
+| Password rules | the identity provider and `scram-sha-256` | `password_profile` / profiles (lockout, reuse, complexity) | `password_profile` is refused |
+| Row-level security, privileges, triggers | yes, this section | yes | yes |
+
+The two cover different ground: EPAS auditing sees **every statement**, the ledger records **what the business decided and why**, in a form an auditor can verify without trusting the audit tool. A regulated deployment would want both.

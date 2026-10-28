@@ -1,5 +1,5 @@
 """Analyst actions: resolve flagged cases (blocking what they decide to block) and record chargebacks."""
-from . import features, rules, training_data
+from . import audit, features, rules, training_data
 
 DECISIONS = ("PERMANENT_BLOCK", "ALLOW_WITH_KYC", "DISMISS_ALERT")
 
@@ -26,6 +26,7 @@ def resolve(conn, case_id: int, decision: str, note: str | None, actor: str) -> 
     if case["status"] == "resolved":
         raise CaseError("this case is already resolved")
     blocked: list[str] = []
+    entries: list[tuple[str, str, dict]] = []     # appended to the ledger last, just before the commit (see audit.py)
     if decision == "PERMANENT_BLOCK":
         card = conn.execute("SELECT fingerprint FROM card WHERE token=%s", (case["card_token"],)).fetchone()
         why = f"case {case_id} ({case['payment_id']})"
@@ -33,6 +34,8 @@ def resolve(conn, case_id: int, decision: str, note: str | None, actor: str) -> 
                             ("card_fingerprint", card["fingerprint"] if card else None)):
             if _block(conn, kind, value, why, "case"):
                 blocked.append(kind)
+                entries.append(("blocklist.add", kind, {"kind": kind, "value": audit.mask_value(kind, value), "reason": why,
+                                                        "source": "case"}))
         rules.invalidate()
     # A real outcome for the model's training data: confirmed fraud or a false positive (ALLOW_WITH_KYC asserts neither).
     label = {"PERMANENT_BLOCK": 1, "DISMISS_ALERT": 0}.get(decision)
@@ -40,11 +43,16 @@ def resolve(conn, case_id: int, decision: str, note: str | None, actor: str) -> 
         training_data.set_label(conn, case["payment_id"], label, "case")
     conn.execute("UPDATE fraud_case SET status='resolved', analyst_decision=%s, note=%s, resolved_by=%s, resolved_at=now() WHERE id=%s",
                  (decision, (note or "")[:1000] or None, actor[:60], case_id))
+    audit.record(conn, actor, "case.resolve", str(case_id),
+                 {"case_id": case_id, "payment_id": case["payment_id"], "merchant_id": case["merchant_id"], "decision": decision,
+                  "blocked": blocked})
+    audit.record_all(conn, actor, entries)
     conn.commit()
     return {"case_id": case_id, "decision": decision, "blocked": blocked}
 
 
-def record_chargeback(conn, payment_id: str, amount: int | None, reason: str, reason_code: str | None = None) -> dict:
+def record_chargeback(conn, payment_id: str, amount: int | None, reason: str, reason_code: str | None = None,
+                      actor: str = audit.SYSTEM) -> dict:
     tx = conn.execute("SELECT t.*, c.fingerprint FROM transaction t LEFT JOIN card c ON c.token=t.card_token WHERE t.payment_id=%s",
                       (payment_id,)).fetchone()
     if not tx:
@@ -59,4 +67,7 @@ def record_chargeback(conn, payment_id: str, amount: int | None, reason: str, re
     if training_data.is_fraud_chargeback(reason_code, reason):      # a fraud-coded dispute is the strongest label there is
         training_data.set_label(conn, payment_id, 1, "chargeback")
     touched = features.add_chargeback(conn, user_id=tx["customer_id"], card_fp=tx["fingerprint"])
+    audit.record(conn, actor, "chargeback.record", payment_id,
+                 {"payment_id": payment_id, "merchant_id": tx["merchant_id"], "amount": amount,
+                  "reason_code": (reason_code or "").strip()[:20] or None, "customer": audit.short_hash(tx["customer_id"])})
     return {"payment_id": payment_id, "amount": amount, "entities_updated": touched}

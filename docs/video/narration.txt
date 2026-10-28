@@ -1,76 +1,46 @@
 ## 1 am_eric
-When a shop takes a card payment, three questions come up.
-
-Is this payment safe? Which processor should handle it? And what if that processor fails?
+I run a marketplace. Card fraud and false declines cost me money. And I will not ship payment data to three vendors.
 
 ...
 
-PayBroker answers all three, behind one API.
+So here is how Postgres on AgentPG does it. That is the platform part, with its EDB extensions. PayBroker is the sample app on top.
 
-It is a sample application, built on Postgres, and running on AgentPG.
+Three things here are scaffolding you can swap: sign-in, the model gateway, and the secret vault.
 
-It uses only test cards and simulated processors. So nothing here moves real money.
+Sign-in speaks standard OpenID Connect. Any provider works, as long as it sends the roles our apps expect. The gateway speaks an OpenAI-compatible API. Both are set by configuration.
 
-...
+The vault is a small module of the shared kit. It is replaceable, but not by a setting.
 
-Let's set it up. The server printed a one-time code, so I paste it here.
-
-Then I choose an admin password, and create the account.
+It uses only test cards, so nothing here moves real money.
 
 ## 2 am_eric
-This is the dashboard, and right now it is empty.
+First, setup. I paste the one-time code, and choose an admin password.
 
-One click loads a hundred and twenty fictional payments.
+Now the dashboard. One click loads a hundred and twenty fictional payments, honest ones and fraud attempts.
 
-Ordinary customers, bank declines, and three-D Secure checks. Plus card testing, and account takeover.
-
-I click, and the payments are scored one by one.
+I click, and each payment is scored.
 
 [pause 7]
 
-Done. The overview shows how many were approved, and how long each payment took.
+Done. Under three hundred, a payment is approved.
 
-Payments are spread across the simulated processors. A score weighs approval rate, fee, and speed.
-
-...
-
-This chart is the fraud score. Under three hundred, a payment is approved.
-
-From three hundred to six ninety-nine, the customer must verify.
-
-Seven hundred or more is declined.
+Up to six ninety-nine, the customer must verify. Seven hundred or more is declined.
 
 ## 3 af_heart
-Now let's connect a shop. A merchant is a business that sends payments.
+Next, a shop. I create a merchant called Acme Shop, and then two keys.
 
-I open Merchants, and create one called Acme Shop.
+The secret key stays on the shop's server. Each key is shown once, so it is hidden right after.
 
-Then come two keys. The secret key stays on the shop's server.
+The publishable key can only swap a card for a token. So it is safe in a web page.
 
-I create it. Each key is shown once, so it is hidden right after.
-
-The publishable key is different. It can only swap a card for a token.
-
-That makes it safe to put in a web page.
-
-...
-
-Next, the shop's web address, as an allowed browser origin.
-
-Only that site can call PayBroker from a browser.
-
-Then a webhook address. That is where PayBroker sends signed events.
-
-The signing secret appears once, so I copy it.
+Then the allowed browser origin, and a webhook address. The webhook signing secret appears once, too.
 
 ## 4 af_heart
-Time for a payment. First, the customer's browser trades the test card for a token.
+Now a payment. The customer's browser trades the test card for a token.
 
-It uses the publishable key. So the shop's server never sees the card number.
+So the shop's server never sees the card number.
 
-Now the server authorizes forty-nine ninety-nine dollars, using the secret key.
-
-It adds an idempotency key. That is a unique label for the order.
+The server then authorizes forty-nine ninety-nine dollars, with an idempotency key.
 
 [pause 1.5]
 
@@ -83,46 +53,30 @@ Now suppose the network drops, and the shop sends the same request again.
 It gets the same payment back. Look at the payment id. It is identical. Never a second charge.
 
 ## 5 af_heart
-Back in the dashboard, Payments shows it. I search for the payment, and open it.
+In the dashboard, the payment opens with its score, out of one thousand.
 
-At the top, the fraud score, out of one thousand.
+Below, the checks that ran, and the time spent in each step.
 
-This payment is clean, so no risk signals are reported.
-
-Below, the checks that ran. Tier one is a list of fixed rules.
-
-Tier two is a small model, running inside PayBroker itself.
-
-Here is the time spent in each step. A few milliseconds in total.
-
-Next, the details the model looked at.
-
-And last, the processor that handled it.
-
-Every decision is explained. So an analyst never has to guess.
+And last, the processor that handled it. Every decision is explained.
 
 ## 6 am_michael
-Next, test cards that trigger specific behaviours.
-
-The first one makes the customer's bank decline.
+Now, test cards that trigger specific behaviours. The first one makes the customer's bank decline.
 
 [pause 2.0]
 
-The answer is four oh two, card declined. Clear, and easy to handle.
+Four oh two, card declined.
 
 ...
 
-The second card demands three-D Secure. That is an extra step, where the customer proves who they are.
+The second card demands three-D Secure, where the customer proves who they are.
 
 [pause 2.0]
 
-The answer holds a page to send the customer to.
-
-I open it, and approve the verification.
+The answer holds a page to send the customer to. I open it, and approve.
 
 [pause 1.5]
 
-The customer is back at the shop, with a signed link the shop can verify.
+The customer is back at the shop, with a signed link.
 
 ...
 
@@ -130,68 +84,106 @@ The third card makes the first processor fail.
 
 [pause 2.0]
 
-PayBroker tries the next processor straight away. So the payment still succeeds.
+PayBroker tries the next processor. So the payment still succeeds. The routing shows an error, then approved.
 
-In Payments, the routing shows it. First an error, then approved.
-
-## 7 am_michael
-Now a risky payment. A brand-new account, a very fast checkout, and a pasted card number.
-
-The basket is large, too. Let's send it.
+## 7 af_bella
+Now, the payment my marketplace fears. A brand-new account, a very fast checkout, a pasted card number, and a large basket.
 
 [pause 2.0]
 
-Four oh three, rejected. The score is high, so no processor ever saw it.
+Four oh three, rejected. No processor ever saw it.
 
-A case opens for an analyst. Here it is, at the top of Cases.
+A case opens for an analyst. The summary comes from the built-in fallback, because no language model is configured.
 
-The analyst reads the summary. Here it comes from the built-in fallback, because no language model is configured.
+The AI only advises. A person decides. I choose permanent block.
 
-The AI only advises. A person decides.
+## 8 am_adam
+The shop also needs to hear about every payment. PayBroker sends it signed events, on a webhook.
 
-I choose permanent block, and resolve the case.
+Here is the shop's receiver. It checks every signature, and says signature okay.
+
+On the merchant, every delivery is listed. If the shop is down, PayBroker retries, with growing delays.
+
+## 9 af_sarah
+Now, under the hood. Here is a problem the analyst has. Have we seen payments like this one before?
+
+Postgres answers it, with pgvector. Every payment is stored as a list of seventeen numbers.
+
+This index finds the nearest neighbours fast. It is HNSW, with cosine distance.
 
 [pause 1.5]
 
-The device, the address, and the card are blocked from now on.
+And here is the real query from the app. It sorts past payments by distance, and keeps the five nearest flagged ones.
 
-In Rules, the blocklist shows them.
+[pause 2.0]
 
-## 8 af_bella
-Now, the rules behind those decisions.
+Each row shows how close it is, and its risk category.
 
-There are three built-in rules. Rules are plain data, not code.
+Those five go to the triage. No second system, and no copy of the data.
 
-I add one. It asks for three-D Secure when a large basket is paid in under five seconds.
+## 10 am_michael
+Next problem. Fraudsters pay with cards that are not theirs. So the cardholder name should look like the account name.
 
-The editor only accepts known fields and values. So a typo is refused, instead of silently ignored.
+Postgres can compare them, with the fuzzystrmatch extension. Here are two real calls.
 
-...
+Smith and Smyth are one letter apart, and they sound the same.
 
-The system can also propose new rules, from confirmed fraud.
+[pause 1.5]
 
-But a suggestion does nothing until a person approves it.
+Now a payment. The card says Jon Smith. The account says Peter Wong. The basket is large.
 
-## 9 af_bella
-Remember the webhook address? Here is the shop's receiver.
+[pause 2.0]
 
-It checks the signature on every event. And each one says signature okay.
+The reason code is name mismatch. And the customer is asked to verify.
 
-On the merchant, every delivery is listed. With its attempts, and the response code.
+In the dashboard, the same reason code appears, with its explanation.
 
-If the shop is down, PayBroker keeps retrying, with growing delays. So no event is lost.
+## 11 am_michael
+That step came from a rule. There are four built-in rules now.
 
-## 10 af_bella
-Everything you saw is also open to an AI assistant, through a read-only connector called MCP.
+The new one asks for three-D Secure when the names do not match, on a large basket.
 
-It can search payments, and explain a decision. But it can never resolve a case.
+Rules are plain data. And the editor only accepts known fields, so a typo is refused.
 
-...
+## 12 af_bella
+Next problem. I do not want everyone who reads the database to see customer data.
 
-To recap. One API. Smart routing. Three layers of fraud checks. And a person who decides.
+Here is the app's own connection. It sees the real customer id, and the real address.
 
-Try it yourself. The quick start takes a few minutes, with Docker.
+[pause 1.5]
 
-The full guide is in the docs folder of the repository.
+Now the read-only role. It is the kind AgentPG makes for read-only users, and for its restricted MCP. The same query on the table is denied.
+
+[pause 1.5]
+
+But the masked view is allowed. Identifiers become short hashes. The address loses its last number.
+
+[pause 1.5]
+
+And a write is refused. The database enforces all of it.
+
+## 13 am_adam
+Last problem. How is the database doing, and what should I tune?
+
+That is the Database insights tab. On my laptop, plain Postgres, it shows the slowest statements, from pg_stat_statements. That is all a laptop can show.
+
+On AgentPG, the same page also reads edb_stat_monitor, edb_pg_tuner, and query_advisor, when they are installed.
+
+I cannot run them here. So this is real output, captured from our live AgentPG fleet.
+
+[pause 1.0]
+
+The PayBroker instance has edb_stat_monitor and query_advisor, next to pgvector and fuzzystrmatch.
+
+[pause 1.5]
+
+Its advisor suggested two indexes, and one statistics object. It only suggests. A person decides.
+
+## 14 af_heart
+Try it yourself. On AgentPG, one command deploys it. Or run it on your laptop, with Docker.
+
+Remember the three colours. Platform is Postgres on AgentPG. Scaffolding is swappable. PayBroker is the sample.
+
+The guide is in the docs folder. Section seventeen lists every EDB feature this app uses.
 
 Next, see how ShopFront uses PayBroker.

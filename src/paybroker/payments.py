@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import cards, features, fraud, ml, namematch, origins, routing, rules, training_data, webhooks
+from . import audit, cards, features, fraud, ml, namematch, origins, routing, rules, training_data, webhooks
 from . import metrics as m
 from .ids import new_id
 
@@ -37,6 +37,16 @@ def request_hash(body: dict) -> str:
 
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
+
+
+def _refuse(conn, merchant: dict, body: dict, payment_id: str, code: str) -> None:
+    """An authorization refused before it became a payment (nothing of it survives the rollback) still leaves evidence: one ledger
+    entry in its own small transaction, so the refusal is on record even though the payment is not."""
+    conn.rollback()
+    audit.record(conn, audit.merchant_actor(merchant["id"]), "payment.refused", payment_id,
+                 {"merchant_id": merchant["id"], "code": code, "amount": body.get("amount"), "currency": body.get("currency"),
+                  "idempotency_key": audit.short_hash(body.get("idempotency_key"))})
+    conn.commit()
 
 
 # ---- rendering (one place defines what a payment looks like) --------------------------------------------------
@@ -153,11 +163,11 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
     tx_id = row["id"]
 
     if body["currency"] not in s["allowed_currencies"]:
-        conn.rollback()
+        _refuse(conn, merchant, body, payment_id, "CURRENCY_NOT_ALLOWED")
         raise PaymentError(422, "CURRENCY_NOT_ALLOWED", f"this merchant does not accept {body['currency']}")
     card = cards.get(conn, merchant["id"], body["payment_method"]["card_token"])
     if card is None:
-        conn.rollback()
+        _refuse(conn, merchant, body, payment_id, "INVALID_CARD_TOKEN")
         raise PaymentError(422, "INVALID_CARD_TOKEN", "unknown card token for this merchant")
 
     # -- feature fetch
@@ -206,7 +216,12 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
                      (challenge["id"], tx_id, datetime.now(UTC) + timedelta(minutes=30), body.get("return_url")))
         result = "C"
     else:
-        status, result, t_psp, attempts = _route_and_authorize(conn, tx_id, merchant, card, body, capture, tx_fields)
+        try:
+            status, result, t_psp, attempts = _route_and_authorize(conn, tx_id, merchant, card, body, capture, tx_fields)
+        except PaymentError as exc:
+            if exc.code == "NO_ROUTE":      # _route_and_authorize has already rolled back
+                _refuse(conn, merchant, body, payment_id, "NO_ROUTE")
+            raise
 
     # -- persist, learn, emit
     fa_row = conn.execute(
@@ -234,6 +249,8 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
              "DECLINED": "payment.declined", "FAILED": "payment.failed"}.get(status)
     if event:
         emit(conn, merchant, event, render(tx, fa_row, challenge, public_url))
+    audit.record(conn, audit.merchant_actor(merchant["id"]), "payment.authorize", payment_id,
+                 audit.payment_payload(tx, fa_row, card, challenge=bool(challenge)))      # the decision and why, in the same commit
     conn.commit()
 
     m.FRAUD_SCORE.observe(score)
@@ -275,6 +292,8 @@ def _route_and_authorize(conn, tx_id, merchant, card, body, capture, tx_fields) 
 
 
 # ---- 3-D Secure completion (simulated issuer) ---------------------------------------------------------------------
+AUDIT_3DS = "issuer:3ds-page"     # the hosted page has no login: the ledger names it, not a person
+
 def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict:
     """The cardholder finished the challenge. In this sample the hosted page asks the tester to pick the outcome; a real
     deployment receives the ACS result instead."""
@@ -286,6 +305,9 @@ def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict
     if ch["expires_at"] < datetime.now(UTC):
         conn.execute("UPDATE three_ds_challenge SET status='expired' WHERE id=%s", (challenge_id,))
         conn.execute("UPDATE transaction SET status='DECLINED', decline_code='3ds_expired', updated_at=now() WHERE id=%s", (ch["transaction_id"],))
+        expired = conn.execute("SELECT * FROM transaction WHERE id=%s", (ch["transaction_id"],)).fetchone()
+        audit.record(conn, AUDIT_3DS, "payment.3ds_complete", expired["payment_id"],
+                     audit.payment_payload(expired, challenge_id=audit.short_hash(challenge_id), outcome="expired"))
         conn.commit()
         raise PaymentError(410, "CHALLENGE_EXPIRED", "the challenge expired; the payment was declined")
     tx = conn.execute("SELECT * FROM transaction WHERE id=%s FOR UPDATE", (ch["transaction_id"],)).fetchone()
@@ -313,6 +335,8 @@ def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict
     out = render(tx, fa, None, public_url)
     if event:
         emit(conn, merchant, event, out)
+    audit.record(conn, AUDIT_3DS, "payment.3ds_complete", tx["payment_id"],
+                 audit.payment_payload(tx, fa, challenge_id=audit.short_hash(challenge_id), outcome=outcome))
     conn.commit()
     m.PAYMENTS.labels(status.lower(), tx["psp_selected"] or "none").inc()
     if ch["return_url"] and merchant["webhook_secret_enc"]:   # the page redirects the customer here; unsigned redirects are never made
@@ -330,11 +354,12 @@ def _locked(conn, merchant_id: str, payment_id: str) -> dict:
     return tx
 
 
-def _finish(conn, merchant: dict, tx_id, event: str, public_url: str) -> dict:
+def _finish(conn, merchant: dict, tx_id, event: str, public_url: str, **audit_extra) -> dict:
     tx = conn.execute("SELECT * FROM transaction WHERE id=%s", (tx_id,)).fetchone()
     fa = conn.execute("SELECT * FROM fraud_assessment WHERE transaction_id=%s", (tx_id,)).fetchone()
     out = render(tx, fa, None, public_url)
     emit(conn, merchant, event, out)
+    audit.record(conn, audit.merchant_actor(merchant["id"]), event, tx["payment_id"], audit.payment_payload(tx, **audit_extra))
     conn.commit()
     return out
 
@@ -349,7 +374,7 @@ def capture(conn, merchant: dict, payment_id: str, amount: int | None, public_ur
         conn.rollback()
         raise PaymentError(422, "INVALID_AMOUNT", "capture amount must be between 1 and the authorized amount", payment_id)
     conn.execute("UPDATE transaction SET status='CAPTURED', amount_captured=%s, updated_at=now() WHERE id=%s", (amount, tx["id"]))
-    return _finish(conn, merchant, tx["id"], "payment.captured", public_url)
+    return _finish(conn, merchant, tx["id"], "payment.captured", public_url, action_amount=amount)
 
 
 def void(conn, merchant: dict, payment_id: str, public_url: str) -> dict:
@@ -373,4 +398,4 @@ def refund(conn, merchant: dict, payment_id: str, amount: int | None, public_url
         raise PaymentError(422, "INVALID_AMOUNT", f"refund amount must be between 1 and {left}", payment_id)
     status = "REFUNDED" if amount == left else "PARTIALLY_REFUNDED"
     conn.execute("UPDATE transaction SET status=%s, amount_refunded=amount_refunded+%s, updated_at=now() WHERE id=%s", (status, amount, tx["id"]))
-    return _finish(conn, merchant, tx["id"], "payment.refunded", public_url)
+    return _finish(conn, merchant, tx["id"], "payment.refunded", public_url, action_amount=amount)

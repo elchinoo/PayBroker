@@ -211,7 +211,7 @@ def main():
     final = os.path.join(work, a.name + '.mp4')
     cmd += ['-filter_complex', fc, '-map', '0:v', '-map', '[aud]', '-map', f'{len(info) + 1}:s',
             '-t', f'{end:.2f}', '-r', '25',
-            '-vf', 'scale=out_range=tv,format=yuv420p', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100',
+            '-vf', 'tpad=stop_mode=clone:stop_duration=6,scale=out_range=tv,format=yuv420p', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100',
             '-c:s', 'mov_text', '-metadata:s:s:0', 'language=eng', '-movflags', '+faststart', final]
     run(*cmd)
     print('final:', final, f'{duration(final):.1f}s')

@@ -41,3 +41,4 @@ dialog .close { position: sticky; float: right; top: 0; z-index: 2; }
 .checkgrid label { display: flex; gap: .35rem; align-items: center; font-weight: 400; }
 @media (max-width: 52rem) { .cols { grid-template-columns: 1fr; } }
 .card h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
+tr.broken td { background: color-mix(in srgb, var(--err) 12%, transparent); }
