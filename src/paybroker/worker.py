@@ -15,7 +15,7 @@ from .db import connect
 from .llm_http import LLMError
 
 LEASE_SECONDS = 120
-MAX_ATTEMPTS = {"webhook": len(webhooks.BACKOFF), "fraud.triage": 3, "fraud.rules": 2}
+MAX_ATTEMPTS = {"webhook": webhooks.ATTEMPTS, "fraud.triage": 3, "fraud.rules": 2}
 RETRY_SECONDS = {"fraud.triage": [30, 300, 1800], "fraud.rules": [300, 3600]}
 SYNTH_EVERY = 24 * 3600
 PURGE_EVERY = 600
@@ -53,7 +53,7 @@ def handle(conn, job: dict) -> str:
         if outcome == "locked":
             _finish(conn, job, detail, retry_in=60, free_attempt=True)     # waiting for an unlock is not a failed attempt
         elif outcome == "retry":
-            _finish(conn, job, detail, retry_in=webhooks.BACKOFF[min(attempts, len(webhooks.BACKOFF) - 1)])
+            _finish(conn, job, detail, retry_in=webhooks.BACKOFF[min(attempts - 1, len(webhooks.BACKOFF) - 1)])
         else:
             _finish(conn, job, None if outcome in {"delivered", "skipped"} else detail)
         return outcome

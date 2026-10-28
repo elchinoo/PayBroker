@@ -3,6 +3,7 @@ import { bootSession, can, refreshSession, renderLogin, renderSetup, renderVault
 import { $ } from "/kit/ui.js";
 import { initCases } from "/static/cases.js";
 import { initConnect } from "/static/connect.js";
+import { initInsightsPage } from "/static/insights.js";
 import { initMerchants } from "/static/merchants.js";
 import { initOverview } from "/static/overview.js";
 import { initPayments } from "/static/payments.js";
@@ -10,9 +11,9 @@ import { initRouting } from "/static/routing.js";
 import { initRules } from "/static/rules.js";
 import { initSettings } from "/static/settings.js";
 
-const TABS = ["overview", "payments", "cases", "rules", "merchants", "routing", "settings", "connect"];
-const INIT = { overview: initOverview, payments: initPayments, cases: initCases, rules: initRules, merchants: initMerchants, routing: initRouting, settings: initSettings, connect: initConnect };
-const NEEDS = { overview: "payments:read", payments: "payments:read", cases: "payments:read", rules: "payments:read", merchants: "payments:read", routing: "payments:read", settings: "settings:manage", connect: "mcp:use" };
+const TABS = ["overview", "payments", "cases", "rules", "merchants", "routing", "settings", "insights", "connect"];
+const INIT = { overview: initOverview, payments: initPayments, cases: initCases, rules: initRules, merchants: initMerchants, routing: initRouting, settings: initSettings, insights: initInsightsPage, connect: initConnect };
+const NEEDS = { overview: "payments:read", payments: "payments:read", cases: "payments:read", rules: "payments:read", merchants: "payments:read", routing: "payments:read", settings: "settings:manage", insights: "settings:manage", connect: "mcp:use" };
 const SECTIONS = ["auth-card", "vault-banner", "nav", "signout", ...TABS.map((t) => "view-" + t)];
 
 function hideAll() { for (const id of SECTIONS) $(id).hidden = true; }

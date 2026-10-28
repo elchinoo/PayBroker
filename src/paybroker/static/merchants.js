@@ -126,7 +126,7 @@ async function openMerchant(id) {
     e.preventDefault();
     try { const r = await api(`/api/merchants/${id}/webhook`, { method: "PUT", json: { url: url.value.trim() || null } }); if (r.signing_secret) show("Webhook signing secret.", r.signing_secret); else toast("Webhook removed"); } catch (ex) { toast(ex.message, true); }
   } }, h("h3", {}, "Webhook"),
-  h("p", { class: "muted" }, "Events are POSTed as JSON with X-Timestamp and X-Signature = HMAC-SHA256(secret, timestamp + \".\" + raw body). Saving generates a new signing secret. Delivery retries with back-off for a day."),
+  h("p", { class: "muted" }, "Events are POSTed as JSON with X-Timestamp and X-Signature = HMAC-SHA256(secret, timestamp + \".\" + raw body). Saving generates a new signing secret. Delivery retries with back-off for about a day."),
   field("URL", url), manage ? h("button", { class: "primary", type: "submit" }, m.webhook_url ? "Save and rotate the secret" : "Save") : null);
   if (!manage) url.disabled = true;
 

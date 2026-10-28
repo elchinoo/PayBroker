@@ -17,12 +17,13 @@ NUMERIC_FIELDS = {
     "user_tx_count_1m", "ip_tx_count_1m", "card_tx_count_1m", "device_tx_count_1m",
 }
 BOOL_FIELDS = {"impossible_travel_flag", "device_fingerprint_known", "new_device_for_account", "pasted_card_number",
-               "country_mismatch"}
+               "country_mismatch", "name_mismatch"}
 TEXT_FIELDS = {"currency", "ip_country", "shipping_country", "bin", "brand", "last_ip_country"}
 FIELDS = NUMERIC_FIELDS | BOOL_FIELDS | TEXT_FIELDS
 OPS = {"==", "!=", ">", ">=", "<", "<=", "in", "not_in"}
 MAX_DEPTH, MAX_CONDITIONS = 3, 12
 HARD_VELOCITY_PER_MIN = 5
+NAME_MISMATCH = "NAME_MISMATCH"   # soft signal (see namematch.py): recorded as a reason, and usable in rules as the field name_mismatch
 
 DEFAULT_RULES = [
     ("new_account_high_amount", "A brand-new account spending a lot: ask for 3-D Secure.", "challenge",
@@ -31,6 +32,8 @@ DEFAULT_RULES = [
      {"all": [{"field": "country_mismatch", "op": "==", "value": True}, {"field": "amount", "op": ">=", "value": 50000}]}),
     ("many_cards_one_account", "Four or more different cards on one account within a week.", "decline",
      {"all": [{"field": "distinct_cards_used_7d", "op": ">=", "value": 4}]}),
+    ("name_mismatch_large_basket", "The cardholder name does not look like the account name on a sizeable basket: ask for 3-D Secure.", "challenge",
+     {"all": [{"field": "name_mismatch", "op": "==", "value": True}, {"field": "amount", "op": ">=", "value": 30000}]}),
 ]
 
 
@@ -158,8 +161,9 @@ def run(conn, ctx: dict, *, ip: str | None, device: str | None, card_fp: str | N
         challenges.append("MERCHANT_3DS_THRESHOLD")
     if card_behavior == "requires_3ds":
         challenges.append("ISSUER_REQUIRES_3DS")
+    soft = [NAME_MISMATCH] if ctx.get("name_mismatch") else []   # modest weight: a reason on its own, a verdict only through a rule
     if declines:
-        return Tier1("DECLINE", declines + challenges, reasons or [c.removeprefix("rule:").upper() for c in declines])
+        return Tier1("DECLINE", declines + challenges + soft, (reasons or [c.removeprefix("rule:").upper() for c in declines]) + soft)
     if challenges:
-        return Tier1("CHALLENGE", challenges, [c.removeprefix("rule:").upper() for c in challenges])
-    return Tier1()
+        return Tier1("CHALLENGE", challenges + soft, [c.removeprefix("rule:").upper() for c in challenges] + soft)
+    return Tier1(None, soft, soft)

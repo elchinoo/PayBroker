@@ -11,7 +11,7 @@ from tests.conftest import needs_db
 
 pytestmark = needs_db
 
-from paybroker import cards, demo, insights, webhooks, worker  # noqa: E402
+from paybroker import cards, demo, insights, vault, webhooks, worker  # noqa: E402
 from paybroker.db import connect  # noqa: E402
 
 KEY = "operator-test-key-0123456789"
@@ -396,6 +396,63 @@ def test_webhooks_are_signed_and_retried(client, shop, op, monkeypatch):
     assert hmac.compare_digest(req.headers["x-signature"], expect)
     body = json.loads(raw)
     assert body["type"] == "payment.authorized" and body["data"]["payment_id"] == p["payment_id"]
+
+
+def test_changing_the_platform_encryption_key_after_the_vault_exists_locks_it_until_the_admin_signs_in(client, shop, op, monkeypatch):
+    """Documented in docs/GUIDE.md: the old wrap cannot be opened with the new value (locked, reason given); the admin password
+    unlocks and the kit re-wraps under the new value, so the next restart unlocks by itself."""
+    mid, _, _ = shop
+    monkeypatch.setattr("paybroker.netguard.socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
+    pw = "correct horse battery staple"
+    monkeypatch.setenv("PAYBROKER_ENCRYPTION_KEY", "platform-secret-one")
+    client.post("/api/admin-password", json={"new": pw}, headers=op)
+    assert client.put(f"/api/merchants/{mid}/webhook", json={"url": "https://merchant.example/hook"}, headers=op).status_code == 200
+    with connect() as conn:
+        secret = conn.execute("SELECT webhook_secret_enc FROM merchant WHERE id=%s", (mid,)).fetchone()["webhook_secret_enc"]
+        vault.lock()
+        assert vault.try_unlock_with_platform_secret(conn) and vault.decrypt(secret).startswith("whsec_")     # a restart unlocks by itself
+
+        vault.lock()
+        monkeypatch.setenv("PAYBROKER_ENCRYPTION_KEY", "platform-secret-two")                            # the value was changed
+        assert not vault.try_unlock_with_platform_secret(conn)                                           # the restart leaves it locked
+        st = vault.status(conn)
+        assert st["initialized"] and not st["unlocked"] and st["auto_unlock"] and st["reason"] == "platform_key_mismatch"
+        with pytest.raises(vault.VaultLocked):
+            vault.decrypt(secret)                                                                        # webhooks wait, nothing is lost
+        assert client.post("/api/login", json={"password": pw}, headers=CSRF).status_code == 200            # the admin password unlocks
+        assert vault.is_unlocked() and vault.decrypt(secret).startswith("whsec_")
+
+        vault.lock()
+        assert vault.try_unlock_with_platform_secret(conn)                                               # re-wrapped by the kit: next restart is automatic
+        vault.lock()
+        monkeypatch.setenv("PAYBROKER_ENCRYPTION_KEY", "platform-secret-one")
+        assert not vault.try_unlock_with_platform_secret(conn)                                           # the old value no longer opens it
+
+
+def test_webhook_retries_follow_the_documented_schedule_then_fail(client, shop, op, monkeypatch):
+    """30 s, 5 min, 30 min, 2 h, 6 h, 15 h between seven attempts (API.md and the README say the same), then `failed`."""
+    mid, sk, pk = shop
+    monkeypatch.setattr("paybroker.netguard.socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
+    client.post("/api/admin-password", json={"new": "correct horse battery staple"}, headers=op)
+    assert client.put(f"/api/merchants/{mid}/webhook", json={"url": "https://merchant.example/hook"}, headers=op).status_code == 200
+    monkeypatch.setattr(webhooks, "_client", lambda: httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503))))
+    pay(client, sk, tokenize(client, pk), "order-hook-2")
+    waits = []
+    with connect() as conn:
+        for n in range(1, webhooks.ATTEMPTS + 1):
+            assert worker.run_once(conn) == 1
+            ev = conn.execute("SELECT status, attempts FROM webhook_event").fetchone()
+            job = conn.execute("SELECT done_at, extract(epoch FROM available_at - now()) AS wait FROM outbox WHERE topic='webhook'").fetchone()
+            assert ev["attempts"] == n
+            if n < webhooks.ATTEMPTS:
+                assert ev["status"] == "pending" and job["done_at"] is None
+                waits.append(round(float(job["wait"]) / 10) * 10)
+                conn.execute("UPDATE outbox SET available_at = now()")
+                conn.commit()
+            else:
+                assert ev["status"] == "failed" and job["done_at"] is not None
+    assert waits == [30, 300, 1800, 7200, 21600, 54000]
+    assert webhooks.ATTEMPTS == 7 and 23 * 3600 < sum(webhooks.BACKOFF) < 24 * 3600
 
 
 def test_webhook_url_guard_refuses_private_addresses(client, shop, op, monkeypatch):

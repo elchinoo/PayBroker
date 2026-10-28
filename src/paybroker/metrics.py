@@ -35,6 +35,7 @@ def _probe() -> dict[str, float]:
 
 
 metrics.add_db_collector(_probe)
+metrics.add_insights_collector(db.connect)   # db_insights_* gauges (EDB Stat Monitor, EDB Postgres Tuner); a scrape never fails
 
 
 def render() -> tuple[bytes, str]:

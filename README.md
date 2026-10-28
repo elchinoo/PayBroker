@@ -35,7 +35,7 @@ triage), a **card vault** that takes test cards only, **signed webhooks**, a web
   and need no Redis.
 - **Card vault:** keeps the brand, BIN, last four, expiry and a keyed hash of the number. **Never** the number or the CVC.
 - **Webhooks:** `payment.authorized`, `.captured`, `.declined`, `.refunded` and others, signed with HMAC-SHA256, retried with
-  back-off for about a day, every attempt visible.
+  back-off for about a day (seven attempts: 30 s, 5 min, 30 min, 2 h, 6 h, 15 h), every attempt visible.
 - **3-D Secure:** a hosted, simulated issuer page where the tester picks the outcome.
 - **Dashboard** at `/`: overview, payments with a full explanation of every decision, fraud cases, rules and suggestions,
   merchants, routing, settings. **MCP server** at `/mcp` with read-only tools so an assistant can investigate but never decide.
@@ -412,8 +412,8 @@ complete. All four are changed at run time under **Settings > AI triage limits**
 
 Sizing: 20 a minute is a third of the gateway's 60, leaving room for the rule-suggestion job and a second worker. Set `daily_cap` from
 the monthly token budget: budget / 30 / about 1,260 tokens per call. For a 5,000,000-token month that is about 130 calls a day, so the
-default of 500 (about 630,000 tokens a day, 19 million a month if reached every day) is only safe where the budget is several times
-larger; lower it to match yours, and keep in mind that other apps may share the same key.
+default of 120 (about 150,000 tokens a day, 4.5 million a month if reached every day) just fits that budget; raise or lower it to
+match yours, and keep in mind that other apps may share the same key.
 
 - **Per process.** The bucket lives in each worker process, so with N workers the effective rate is N times `rpm`. The daily cap, the
   grouping and the breaker are shared through the database and hold across all workers.
@@ -511,3 +511,9 @@ make bench
 ```
 
 See [SECURITY.md](SECURITY.md) for the security model and its limits, and [API.md](API.md) for every endpoint.
+
+## Documentation
+
+- [docs/GUIDE.md](docs/GUIDE.md): the complete guide (ecosystem interactions, architecture, install, configuration, operations, troubleshooting, testing, AIDB and AgentPG).
+- [docs/GUIDE.md section 17](docs/GUIDE.md#17-edb-and-agentpg-capabilities-used-by-this-app): the EDB and AgentPG capabilities this app uses (database insights, masked views for read-only access, a `fuzzystrmatch` name-mismatch risk signal).
+- [docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md): script and recording notes for a six-minute tutorial video.

@@ -48,8 +48,8 @@ Nothing else in `/v1` (authorize, capture, void, refund, the reads) or anywhere 
   "idempotency_key": "order-1001",
   "amount": 4999, "currency": "USD",
   "capture_method": "manual",
-  "payment_method": {"type": "card", "card_token": "tok_vault_card_...", "cvv_check": true},
-  "customer": {"id": "cus_42", "email": "pat@example.com", "phone": "+15550100", "ip_address": "198.51.100.20", "account_age_hours": 4000},
+  "payment_method": {"type": "card", "card_token": "tok_vault_card_...", "cvv_check": true, "cardholder_name": "Pat Doe"},
+  "customer": {"id": "cus_42", "name": "Patricia Doe", "email": "pat@example.com", "phone": "+15550100", "ip_address": "198.51.100.20", "account_age_hours": 4000},
   "telemetry": {"device_fingerprint": "dev_abc", "user_agent": "...", "checkout_duration_ms": 41000, "pasted_card_number": false, "ip_country": "US"},
   "shipping_address": {"line1": "...", "city": "...", "state": "...", "postal_code": "...", "country": "US"}
 }
@@ -59,6 +59,7 @@ the same key with a different body is `422 IDEMPOTENCY_KEY_REUSED`.** Concurrent
 `capture_method` is `manual` (authorize now, capture later) or `automatic`; the merchant's default applies when omitted.
 `return_url` (optional, up to 500 characters) is where the hosted 3-D Secure page sends the customer afterwards: see *3-D Secure*.
 `account_age_hours` is how old the customer's account is at your site; when absent an established account is assumed.
+`payment_method.cardholder_name` and `customer.name` (both optional, up to 100 characters) feed the `NAME_MISMATCH` risk signal when **both** are present: Postgres `fuzzystrmatch` compares them (spelling variants such as `Jon Smith` and `John Smyth` are similar) and a clear mismatch adds the reason `NAME_MISMATCH`, and asks for 3-D Secure on baskets of 30,000 minor units or more. The names are compared and dropped; they are not stored.
 
 | Status | Body | Meaning |
 |---|---|---|
@@ -131,7 +132,7 @@ X-Signature: hex( HMAC-SHA256(secret, timestamp + "." + raw body) )
 Verify over the **raw** body, compare in constant time, and reject timestamps older than five minutes. The body is
 `{"id": "evt_...", "type": "payment.authorized", "created_at": "...", "data": <the payment>}`. Types: `payment.authorized`,
 `.captured`, `.requires_action`, `.declined`, `.failed`, `.voided`, `.refunded`. Any 2xx counts as delivered; otherwise the
-delivery is retried after 5 s, 30 s, 5 min, 30 min, 2 h and 6 h (six attempts), and each attempt is visible in the dashboard.
+delivery is retried after 30 s, 5 min, 30 min, 2 h, 6 h and 15 h (seven attempts, about 23.6 hours in all), and each attempt is visible in the dashboard.
 Deliveries are at least once: use `id` to deduplicate.
 
 ## Operator API (`/api`)
@@ -160,8 +161,9 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `GET /api/webhook-events` | `payments:read` | |
 | `GET/POST/PUT/DELETE /api/accounts`, `PUT /api/triage-account` | `settings:manage` | AI accounts; keys are never returned |
 | `GET/POST/DELETE /api/tokens` | `settings:manage` | operator tokens, shown once |
+| `GET /api/insights?order=total\|mean\|calls&limit=20` | `settings:manage` | database insights: top statements, tuner recommendations, index advisor suggestions; each part is `{available: false, reason}` where the extension or privilege is missing |
 | `POST /api/demo/traffic` `{count, seed}` | `settings:manage` | fictional payments through the real pipeline |
-| `GET /api/admin/triage/settings`, `PUT` `{rpm?, daily_cap?, group_minutes?, pause_minutes?}` | `settings:manage` | limits on LLM triage: calls per minute 0 to 600 (default 20, 0 = unlimited, per worker process), calls per 24 h 0 to 1,000,000 (default 500, 0 = unlimited), grouping window 0 to 1,440 minutes (default 30, 0 = off), breaker pause 1 to 1,440 minutes (default 10); a stored value wins over `PAYBROKER_TRIAGE_*`; PUT answers 422 out of bounds and writes an `admin_audit` row (`triage.settings`, old and new values). Both return the limits, `sources` (`setting`, `environment` or `default` for each) and `usage`: `{calls_24h, queued, circuit: {open, paused_until, consecutive_429}}` |
+| `GET /api/admin/triage/settings`, `PUT` `{rpm?, daily_cap?, group_minutes?, pause_minutes?}` | `settings:manage` | limits on LLM triage: calls per minute 0 to 600 (default 20, 0 = unlimited, per worker process), calls per 24 h 0 to 1,000,000 (default 120, 0 = unlimited), grouping window 0 to 1,440 minutes (default 30, 0 = off), breaker pause 1 to 1,440 minutes (default 10); a stored value wins over `PAYBROKER_TRIAGE_*`; PUT answers 422 out of bounds and writes an `admin_audit` row (`triage.settings`, old and new values). Both return the limits, `sources` (`setting`, `environment` or `default` for each) and `usage`: `{calls_24h, queued, circuit: {open, paused_until, consecutive_429}}` |
 | `GET /api/admin/training/settings`, `PUT` `{capture?, retention_days?, max_rows?}` | `training:export` or `model:manage` / `model:manage` | capture on or off (default off), retention 1 to 3650 days (default 180), row cap 1,000 to 50,000,000 (default 5,000,000) |
 | `GET /api/admin/training/stats` | `training:export` | rows, labeled, fraud, fraud rate, label sources, per model version, feature hash |
 | `GET /api/admin/training/export?format=csv\|ndjson&labeled=&since=&limit=` | `training:export` | streamed; CSV with `#` header comments (features, hash, model versions), NDJSON with a `_meta` first line; rows of an older feature layout are skipped |

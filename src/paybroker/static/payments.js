@@ -1,7 +1,7 @@
 import { api } from "/kit/api.js";
 import { can } from "/kit/session.js";
 import { $, badge, fill, fmtDateTime, h, toast, confirmDialog, promptDialog } from "/kit/ui.js";
-import { ACTION, cents, flushCard, DECISION, gauge, PAYMENT, pills, headCell } from "/static/common.js";
+import { ACTION, cents, flushCard, DECISION, gauge, PAYMENT, pills, REASON_TEXT, headCell } from "/static/common.js";
 
 const PAGE = 25;
 let wired = false;
@@ -62,7 +62,7 @@ export async function openPayment(id, onChange) {
       ])),
       f ? h("div", { class: "card" }, h("h3", {}, `Fraud engine: ${f.tier2_ml_score} / 1000`), gauge(f.tier2_ml_score),
         h("p", {}, badge(DECISION, f.decision), " ", h("span", { class: "muted" }, `action: ${f.action_taken}`)),
-        f.reasons.length ? h("div", {}, h("h4", {}, "Reasons"), pills(f.reasons)) : h("p", { class: "muted" }, "No risk signals worth reporting."),
+        f.reasons.length ? h("div", {}, h("h4", {}, "Reasons"), pills(f.reasons), ...f.reasons.filter((r) => REASON_TEXT[r]).map((r) => h("p", { class: "muted" }, h("strong", {}, r), ": ", REASON_TEXT[r]))) : h("p", { class: "muted" }, "No risk signals worth reporting."),
         f.tier1_rules_triggered.length ? h("div", {}, h("h4", {}, "Tier 1 rules and filters"), pills(f.tier1_rules_triggered)) : null,
         h("h4", {}, "Timing"), facts([["Fraud engine", `${f.timings.fraud_ms} ms`], ["Feature fetch", `${f.timings.feature_fetch_ms} ms`], ["Tier 1 rules", `${f.timings.tier1_ms} ms`],
           ["Tier 2 model", `${f.timings.ml_inference_ms} ms`], ["Connector round trips", f.timings.psp_ms ? `${f.timings.psp_ms} ms` : ""]])) : null),

@@ -1,0 +1,197 @@
+## 1 am_eric
+When a shop takes a card payment, three questions come up.
+
+Is this payment safe? Which processor should handle it? And what if that processor fails?
+
+...
+
+PayBroker answers all three, behind one API.
+
+It is a sample application, built on Postgres, and running on AgentPG.
+
+It uses only test cards and simulated processors. So nothing here moves real money.
+
+...
+
+Let's set it up. The server printed a one-time code, so I paste it here.
+
+Then I choose an admin password, and create the account.
+
+## 2 am_eric
+This is the dashboard, and right now it is empty.
+
+One click loads a hundred and twenty fictional payments.
+
+Ordinary customers, bank declines, and three-D Secure checks. Plus card testing, and account takeover.
+
+I click, and the payments are scored one by one.
+
+[pause 7]
+
+Done. The overview shows how many were approved, and how long each payment took.
+
+Payments are spread across the simulated processors. A score weighs approval rate, fee, and speed.
+
+...
+
+This chart is the fraud score. Under three hundred, a payment is approved.
+
+From three hundred to six ninety-nine, the customer must verify.
+
+Seven hundred or more is declined.
+
+## 3 af_heart
+Now let's connect a shop. A merchant is a business that sends payments.
+
+I open Merchants, and create one called Acme Shop.
+
+Then come two keys. The secret key stays on the shop's server.
+
+I create it. Each key is shown once, so it is hidden right after.
+
+The publishable key is different. It can only swap a card for a token.
+
+That makes it safe to put in a web page.
+
+...
+
+Next, the shop's web address, as an allowed browser origin.
+
+Only that site can call PayBroker from a browser.
+
+Then a webhook address. That is where PayBroker sends signed events.
+
+The signing secret appears once, so I copy it.
+
+## 4 af_heart
+Time for a payment. First, the customer's browser trades the test card for a token.
+
+It uses the publishable key. So the shop's server never sees the card number.
+
+Now the server authorizes forty-nine ninety-nine dollars, using the secret key.
+
+It adds an idempotency key. That is a unique label for the order.
+
+[pause 1.5]
+
+The answer says authorized, with a fraud score, and the processor that was used.
+
+Now suppose the network drops, and the shop sends the same request again.
+
+[pause 1.5]
+
+It gets the same payment back. Look at the payment id. It is identical. Never a second charge.
+
+## 5 af_heart
+Back in the dashboard, Payments shows it. I search for the payment, and open it.
+
+At the top, the fraud score, out of one thousand.
+
+This payment is clean, so no risk signals are reported.
+
+Below, the checks that ran. Tier one is a list of fixed rules.
+
+Tier two is a small model, running inside PayBroker itself.
+
+Here is the time spent in each step. A few milliseconds in total.
+
+Next, the details the model looked at.
+
+And last, the processor that handled it.
+
+Every decision is explained. So an analyst never has to guess.
+
+## 6 am_michael
+Next, test cards that trigger specific behaviours.
+
+The first one makes the customer's bank decline.
+
+[pause 2.0]
+
+The answer is four oh two, card declined. Clear, and easy to handle.
+
+...
+
+The second card demands three-D Secure. That is an extra step, where the customer proves who they are.
+
+[pause 2.0]
+
+The answer holds a page to send the customer to.
+
+I open it, and approve the verification.
+
+[pause 1.5]
+
+The customer is back at the shop, with a signed link the shop can verify.
+
+...
+
+The third card makes the first processor fail.
+
+[pause 2.0]
+
+PayBroker tries the next processor straight away. So the payment still succeeds.
+
+In Payments, the routing shows it. First an error, then approved.
+
+## 7 am_michael
+Now a risky payment. A brand-new account, a very fast checkout, and a pasted card number.
+
+The basket is large, too. Let's send it.
+
+[pause 2.0]
+
+Four oh three, rejected. The score is high, so no processor ever saw it.
+
+A case opens for an analyst. Here it is, at the top of Cases.
+
+The analyst reads the summary. Here it comes from the built-in fallback, because no language model is configured.
+
+The AI only advises. A person decides.
+
+I choose permanent block, and resolve the case.
+
+[pause 1.5]
+
+The device, the address, and the card are blocked from now on.
+
+In Rules, the blocklist shows them.
+
+## 8 af_bella
+Now, the rules behind those decisions.
+
+There are three built-in rules. Rules are plain data, not code.
+
+I add one. It asks for three-D Secure when a large basket is paid in under five seconds.
+
+The editor only accepts known fields and values. So a typo is refused, instead of silently ignored.
+
+...
+
+The system can also propose new rules, from confirmed fraud.
+
+But a suggestion does nothing until a person approves it.
+
+## 9 af_bella
+Remember the webhook address? Here is the shop's receiver.
+
+It checks the signature on every event. And each one says signature okay.
+
+On the merchant, every delivery is listed. With its attempts, and the response code.
+
+If the shop is down, PayBroker keeps retrying, with growing delays. So no event is lost.
+
+## 10 af_bella
+Everything you saw is also open to an AI assistant, through a read-only connector called MCP.
+
+It can search payments, and explain a decision. But it can never resolve a case.
+
+...
+
+To recap. One API. Smart routing. Three layers of fraud checks. And a person who decides.
+
+Try it yourself. The quick start takes a few minutes, with Docker.
+
+The full guide is in the docs folder of the repository.
+
+Next, see how ShopFront uses PayBroker.

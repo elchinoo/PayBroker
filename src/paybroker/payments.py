@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import cards, features, fraud, ml, origins, routing, rules, training_data, webhooks
+from . import cards, features, fraud, ml, namematch, origins, routing, rules, training_data, webhooks
 from . import metrics as m
 from .ids import new_id
 
@@ -169,6 +169,10 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
                                      ip=req["ip"], amount=body["amount"], telemetry=req["telemetry"],
                                      shipping_country=req["shipping_country"], ip_country=ip_country,
                                      account_age_hours=req["account_age_hours"])
+    # NAME_MISMATCH needs both names; they are compared and dropped (never stored). No key at all when it cannot be computed.
+    name_mismatch = namematch.mismatch(conn, (body.get("payment_method") or {}).get("cardholder_name"), body["customer"].get("name"))
+    if name_mismatch is not None:
+        named["name_mismatch"] = name_mismatch
     t_features = _ms(t0)
 
     # -- tier 1
@@ -184,7 +188,7 @@ def authorize(conn: psycopg.Connection, merchant: dict, body: dict, public_url: 
     model = ml.current(conn)
     score, contribs = model.score(vector)
     t_ml = _ms(t0)
-    reasons = list(dict.fromkeys(t1.reasons + ml.reasons_from(contribs))) if (t1.decision or score >= 300) else []
+    reasons = list(dict.fromkeys(t1.reasons + ml.reasons_from(contribs))) if (t1.decision or t1.triggered or score >= 300) else []
     fraud_ms = _ms(t_start)
     decision = fraud.decide(t1.decision, score)
 

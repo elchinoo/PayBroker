@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import psycopg
+from apgkit import insights as insights_mod
 from apgkit.auth import Principal, TokenError
 from apgkit.auth.rp import safe_return_to
 from apgkit.guard import SecurityGuard
@@ -218,6 +219,17 @@ def prometheus_metrics():
     return Response(body, media_type=ctype)
 
 
+@app.get("/api/insights", dependencies=[Depends(require("settings:manage"))])
+def database_insights(order: str = Query("total", max_length=10), limit: int = Query(20, ge=1, le=100)):
+    """What EDB's query statistics, tuner and index advisor know about this database (admin only: statements show the workload).
+    Each part degrades to {"available": false, "reason": ...} on a database without the extension or privilege."""
+    order = order if order in ("total", "mean", "calls") else "total"
+    with connect() as conn:
+        out = insights_mod.insights_payload(conn, order, limit)
+        conn.rollback()
+    return out
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
@@ -239,10 +251,12 @@ class PaymentMethod(_Body):
     type: str = Field(pattern="^card$")
     card_token: str = Field(min_length=8, max_length=80)
     cvv_check: bool = True
+    cardholder_name: str | None = Field(None, max_length=100, description="name on the card; compared with customer.name (NAME_MISMATCH signal), never stored")
 
 
 class Customer(_Body):
     id: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(None, max_length=100, description="the customer's account name; compared with the cardholder name (NAME_MISMATCH signal), never stored")
     email: str | None = Field(None, max_length=254)
     phone: str | None = Field(None, max_length=30)
     ip_address: str = Field(max_length=45)

@@ -30,6 +30,11 @@ export function gauge(score) {
   return h("div", { class: "gauge" }, svg);
 }
 
+// Plain-language text for the reason codes that need one (shown on the payment page and as the pill's tooltip).
+export const REASON_TEXT = {
+  NAME_MISMATCH: "The cardholder name does not resemble the customer's account name (compared with Postgres fuzzystrmatch: edit distance, double metaphone, soundex). A soft signal: it asks for 3-D Secure only together with a large basket.",
+};
+
 export function pills(items) {
-  return h("div", { class: "pill-list" }, (items || []).map((i) => h("span", { class: "badge plain" }, i)));
+  return h("div", { class: "pill-list" }, (items || []).map((i) => h("span", REASON_TEXT[i] ? { class: "badge plain", title: REASON_TEXT[i] } : { class: "badge plain" }, i)));
 }

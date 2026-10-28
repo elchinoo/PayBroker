@@ -4,7 +4,7 @@
     X-Signature: HMAC-SHA256(merchant webhook secret, timestamp + "." + raw body), hex
 
 Merchants should recompute the signature over the raw body, compare in constant time and reject timestamps older than
-five minutes. Delivery retries with back-off for a day; the merchant sees every attempt in the dashboard.
+five minutes. Delivery retries with back-off for about a day (seven attempts); the merchant sees every attempt in the dashboard.
 """
 import json
 import time
@@ -16,7 +16,8 @@ from . import vault
 from .ids import hmac_hex
 from .netguard import UnsafeURL, check_url
 
-BACKOFF = [5, 30, 300, 1800, 7200, 21600]    # seconds before attempt 2, 3, ...; six attempts in all
+BACKOFF = [30, 300, 1800, 7200, 21600, 54000]    # seconds to wait after failed attempt 1, 2, ... (30 s ... 15 h: about 23.6 h in all)
+ATTEMPTS = len(BACKOFF) + 1                      # the first try plus one per delay
 
 
 def _client() -> httpx.Client:    # indirection so tests can inject a transport
@@ -83,7 +84,7 @@ def deliver(conn, event_id: str) -> tuple[str, str]:
                      (attempts, code, event_id))
         conn.commit()
         return "delivered", detail
-    final = attempts >= len(BACKOFF)
+    final = attempts >= ATTEMPTS
     conn.execute("UPDATE webhook_event SET status=%s, attempts=%s, last_code=%s WHERE event_id=%s",
                  ("failed" if final else "pending", attempts, code, event_id))
     conn.commit()
