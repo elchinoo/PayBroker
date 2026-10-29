@@ -499,8 +499,7 @@ test('PayBroker tutorial video', async ({ page }) => {
     await at(page, 'One click sends', 0.3);
     const offBtn = await hl(demoBtn);
     await glide(page, demoBtn);
-    await at(page, 'Each one is scored', 0.2);
-    await offBtn();
+    await offBtn(); // the click happens as the sentence that names it plays: 120 payments take ~8 s, and "Done." must not come before they finish
     await demoBtn.click();
     await callout(page, 'Every decision is also written to the audit ledger', 3.2);
     const waitStart = Date.now();
