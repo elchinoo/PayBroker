@@ -488,7 +488,7 @@ test('PayBroker tutorial video', async ({ page }) => {
     await at(page, 'First, a quick setup', 0.1);
     await page.goto(PB + '/');
     await expect(page.getByRole('heading', { name: 'Set up PayBroker' })).toBeVisible();
-    await callout(page, 'One-time setup code from the server log', 2.4);
+    await callout(page, 'One-time setup code from the server log', 1.8);
     await type(page, page.locator('#setup-code'), stack.setupCode, 12);
     await type(page, page.locator('#setup-pw'), adminPassword, 6);
     await type(page, page.locator('#setup-pw2'), adminPassword, 6);

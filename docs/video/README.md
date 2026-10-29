@@ -32,7 +32,7 @@ What it does:
    times of `narration.json`.
 5. It stops with an error if any scene is shorter than its narration + 0.7 s.
 
-Structure (problem first, about 7 minutes 10 seconds; story: *I am running payments and I have to prove that nobody changed a decision after the fact*):
+Structure (problem first, about 5 minutes 56 seconds; story: *I am running payments and I have to prove that nobody changed a decision after the fact*):
 1 the problem and the three-colour diagram (PLATFORM = EDB Postgres on AgentPG, REFERENCE SCAFFOLDING = sign-in, LLM gateway, secret vault: swappable and "not the point", SAMPLE APP = PayBroker; all said within the first 30 seconds),
 2 setup, demo traffic, merchant, 3 the shop's payments (authorize, capture, refund, a `NAME_MISMATCH` payment), 4 the audit ledger (Audit tab, chain, Verify: intact, `audit_verify_detail()`),
 5 the tamper (permission denied for the app role, the owner grants itself and is refused by the trigger, the owner switches the trigger off and edits one entry), 6 Verify names the first broken entry (tab and SQL),
@@ -43,18 +43,20 @@ Real versus captured: everything is a real run against the throwaway local Postg
 security. The recorder creates the `a1p_readonly` group role and the login `reporting_reader` before `paybroker migrate` (to mimic AgentPG) and the plain role `ai_agent` before scene 7. `sql` on screen is `psql "$DB"` with terse errors.
 The only non-local content are three real screenshots of the live fleet's PayBroker Insights tab in scene 9 (`videos/live-captures/paybroker-insights-*-2026-10-28.jpg`: top queries, the masking statements recorded by `edb_stat_monitor`, tuner and advisor), shown full screen under the banner *CAPTURED from the live AgentPG fleet, 28 Oct 2026* with a slow zoom and highlight boxes; nothing is retyped. The tamper leaves the take's ledger broken: the database is thrown away with the take.
 
-Voice plan (one accent, US; male and female alternate by topic, never inside a scene; never `af_nicole`):
+Voice plan (one accent, US; three voices, male and female alternate, `af_heart` on every other scene, the two male voices swap, so no voice speaks twice in a row; never `af_nicole`; default speed 1.08):
 
-| Topic | Scenes | Voice |
+| Scene | Topic | Voice |
 |---|---|---|
-| The problem and the diagram | 1 | `am_michael` |
-| Setup, a shop, its payments | 2, 3 | `af_heart` |
-| The audit ledger | 4 | `am_eric` |
-| The tamper and Verify | 5, 6 | `af_bella` |
-| Row-level security | 7 | `am_adam` |
-| Masked views | 8 | `af_sarah` |
-| EDB technology (captured) | 9 | `am_michael` |
-| Close | 10 | `af_heart` |
+| 1 | The problem and the diagram | `am_liam` |
+| 2 | Setup | `af_heart` |
+| 3 | A shop and its payments | `am_eric` |
+| 4 | The audit ledger | `af_heart` |
+| 5 | The tamper | `am_liam` |
+| 6 | Verify | `af_heart` |
+| 7 | Row-level security | `am_eric` |
+| 8 | Masked views | `af_heart` |
+| 9 | EDB technology (captured) | `am_liam` |
+| 10 | Close | `af_heart` |
 
 Writing narration: one `## <scene id> <voice>` section per scene; short sentences, one idea each; a blank line is a pause, `...` a
 short beat, `[pause 1.5]` a deliberate long pause where something happens on screen that the viewer should watch (a payment being

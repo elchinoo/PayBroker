@@ -1,4 +1,4 @@
-## 1 am_michael
+## 1 am_liam
 I am running payments. And I have to prove that nobody changed a decision after the fact. Not my engineers. Not my database admin. Not me.
 
 Here is how EDB Postgres on AgentPG does that. This platform does the work you are about to see.
@@ -28,7 +28,7 @@ Then a publishable key.
 
 Each key is shown once, then hidden.
 
-## 3 af_heart
+## 3 am_eric
 Now Acme Shop takes a payment. The customer's card becomes a token, so the shop never sees the number.
 
 The server authorizes forty-nine ninety-nine dollars.
@@ -49,7 +49,7 @@ One more. The card says Jon Smith. The account says Peter Wong. The basket is la
 
 Postgres compares the names with an extension, fuzzystrmatch. The reason is name mismatch, and the customer is asked to verify.
 
-## 4 am_eric
+## 4 af_heart
 Every one of those wrote a ledger entry. Decisions, captures, refunds. Also rule changes, and key creation.
 
 Each entry is written in the same database transaction as the change itself. So a decision cannot exist without its entry.
@@ -68,7 +68,7 @@ Here is the same check in plain SQL.
 
 A function, a trigger, and a hash. There is no external ledger service to run.
 
-## 5 af_bella
+## 5 am_liam
 Now I try to cheat. This entry is the capture of forty-nine ninety-nine.
 
 [pause 1.5]
@@ -97,7 +97,7 @@ The capture now says one cent. No error. No alarm.
 
 [pause 1.0]
 
-## 6 af_bella
+## 6 af_heart
 Now, back in the dashboard. I verify the chain again.
 
 [pause 2.5]
@@ -112,7 +112,7 @@ The same answer comes in plain SQL.
 
 Look at that. Nobody can stop the owner. But nobody can change history without leaving proof. No blockchain, no ledger service, no extra system. Just Postgres.
 
-## 7 am_adam
+## 7 am_eric
 Next problem. Acme Shop must never see another merchant's payments. Even if a developer forgets the filter.
 
 Row-level security does that, inside the database. There are four rules. A merchant sees only its own rows. Child rows follow their payment. Cases and chargebacks belong to the operator. And read-only auditors may look, never change.
@@ -137,7 +137,7 @@ Last, an AI agent. I give its role a plain select grant on the table.
 
 Still zero rows. The policy is forced. A grant alone opens nothing.
 
-## 8 af_sarah
+## 8 af_heart
 Next problem. An analyst, or an AI agent, needs to read the data. But not the customer details.
 
 The app's own connection sees the real customer id, and the real address.
@@ -158,7 +158,7 @@ Now, one real finding. When someone creates a new database user, grants on the b
 
 Remember this. I will show it again, recorded by the platform itself.
 
-## 9 am_michael
+## 9 am_liam
 The platform adds one more thing. Insights. On my laptop, plain Postgres shows only pg_stat_statements.
 
 On AgentPG, the same page reads edb_stat_monitor, edb_pg_tuner, and query_advisor. These are real screenshots from the live fleet, 28 October.
