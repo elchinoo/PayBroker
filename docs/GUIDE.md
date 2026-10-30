@@ -349,10 +349,12 @@ the kit rule: the variable wins, else the first line of the file named by `<NAME
 | `PAYBROKER_ROLE` | `all` | `api` (HTTP and connector-statistics flush only), `worker` (queue consumer; still serves HTTP) or `all`. Any other value means `all`. |
 | `PAYBROKER_PUBLIC_URL` | request address | Base URL put in 3-D Secure `redirect_url` and used for the SSO redirect URI. Trailing slash removed. |
 | `PAYBROKER_POOL_MAX` | `20` | Maximum size of the connection pool used by the payment path (minimum 2 are opened). |
-| `HOST` | `0.0.0.0` | Bind address of `paybroker serve` and `paybroker start`. |
+| `HOST`, `PAYBROKER_HOST` | `0.0.0.0` | Bind address of `paybroker serve` and `paybroker start` (`PAYBROKER_HOST` wins). The kit honours `PAYBROKER_ALLOW_ANONYMOUS` only when this is a loopback address or `PAYBROKER_ALLOW_ANONYMOUS_PUBLIC=1` is set; PayBroker itself does not enable anonymous access. |
+| `PAYBROKER_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Comma-separated proxy addresses or CIDRs whose `X-Forwarded-For`/`-Proto` uvicorn trusts. Set it to the proxy in front of the app (on AgentPG the sandbox proxy); never `*`: any caller could then choose its own address. |
+| `PAYBROKER_TRUSTED_HOPS` | `1` | Proxies in front of the app. The client address for rate limits is the entry that many places from the right of `X-Forwarded-For` (0 = socket address). The app must only be reachable through the proxy. |
 | `PORT` | `8000` | Port of the same. |
 | `PAYBROKER_ENCRYPTION_KEY`, `_FILE` (default `/etc/paybroker/encryption_key`) | none | Platform secret that wraps the vault's data key a second time, so the vault unlocks itself after a restart. Without it, webhook secrets and stored AI keys stay locked until an admin signs in. In SSO-only mode it is what creates the vault. |
-| `PAYBROKER_API_KEY`, `_FILE` (default `/etc/paybroker/api_key`) | none | Optional static full-access operator key (login `api_key` and bearer). Prefer operator tokens. |
+| `PAYBROKER_API_KEY`, `_FILE` (default `/etc/paybroker/api_key`) | none | Optional static full-access operator key (login `api_key` and bearer). At least 32 characters: a shorter key is refused and an error is logged; a startup warning is logged while one is enabled. Prefer operator tokens. |
 | `PAYBROKER_OIDC_ISSUER` | none | The identity provider's URL. Single sign-on is off when unset. |
 | `PAYBROKER_OIDC_CLIENT_ID` | `paybroker` | This app's client id at the provider; also the token audience PayBroker requires. |
 | `PAYBROKER_OIDC_CLIENT_SECRET`, `_FILE` | none | The web client's secret. Empty means a public client (PKCE only). |
@@ -536,6 +538,8 @@ X-Signature: hex(HMAC-SHA256(secret, timestamp + "." + raw body))
 The body is `{"id": "evt_...", "type": "...", "created_at": "...", "data": <the payment>}`, serialized with sorted keys and no spaces: verify over the **raw bytes**. Any 2xx is
 delivered. Otherwise the delivery is retried after 30 s, 5 min, 30 min, 2 h, 6 h and 15 h (seven attempts, about 23.6 hours in all, then `failed`), and every attempt is visible under Merchants (recent events) and in the payment's detail. Delivery is at least
 once: deduplicate on `id`. While the vault is locked, deliveries wait (they are not failed). A merchant with no webhook gets no events.
+
+The merchant's URL is untrusted input. At delivery the host is resolved once, every address must be public (including the IPv6 forms that embed an IPv4 address: IPv4-mapped, NAT64, 6to4, Teredo), and the connection goes to that validated address with the merchant's `Host` header and TLS server name, so a name that changes its answer between check and use cannot reach an internal address. Redirects are never followed; a refused URL counts as a failed attempt and follows the usual retry schedule.
 
 ### 7.8 Routing
 
@@ -725,6 +729,10 @@ Keep ecoctl's `.ecosystem/state.json` too (it holds the generated encryption key
 
 Changing `PAYBROKER_ENCRYPTION_KEY` after the vault exists: set the new value and restart. The old wrap no longer opens, so the vault stays locked (`GET /api/session` shows `unlocked: false`, `reason: platform_key_mismatch`; webhooks wait and stored AI keys are unusable, the environment AI account is unaffected). Sign in once with the admin password: the kit re-wraps the data key under the new value, nothing stored is lost, and the next restart unlocks by itself. Putting the old value back before that first sign-in also works. Covered by a test in `tests/test_db.py`; there is no command and no data migration.
 
+**Rotating the data key.** Changing the password or `PAYBROKER_ENCRYPTION_KEY` only re-wraps the same data key. To replace the key itself (for example if a database copy and an old password or platform secret may have been exposed), sign in, then run `paybroker rotate-vault-key --yes` (asks for the admin password) or `POST /api/vault/rotate-key {"password": "...", "confirm": true}` (needs `settings:manage`). It generates a new data key and, in one transaction, re-encrypts every stored secret (`llm_account.api_key_enc`, `merchant.webhook_secret_enc` and the `app_setting` row `card_fingerprint_key_enc`, so card fingerprints stay valid) and rewrites both key wraps; a failure leaves everything as it was. It writes an `admin_audit` row and an `audit_ledger` entry (`vault.rotate_key`, store names and counts only). The audit ledger holds ids, amounts, masked values and webhook origins, never a secret or ciphertext, so it is untouched and `GET /api/audit/verify` stays intact. **Restart every other replica and worker afterwards**: they still hold the old key and cannot decrypt until restarted or unlocked again. Avoid editing LLM accounts or webhooks while it runs. Old backups still open with the old key: re-issue the secrets themselves (webhook secrets, provider keys) if they were exposed.
+
+**Stored secrets are bound to their row.** Each ciphertext is a `v2$...` AES-256-GCM token whose context is `llm_account.api_key_enc:<id>`, `merchant.webhook_secret_enc:<merchant id>` or `app_setting.card_fingerprint_key_enc`, so a value copied to another row or column does not decrypt. Values written by earlier versions still decrypt and are upgraded to v2 at the next unlock (sign-in, `POST /api/vault/unlock`, startup with the platform secret) or by a rotation. All processes of the app must run the same version: an older version cannot read v2 tokens or wraps.
+
 ### 10.4 Recovery commands
 
 | Situation | Command |
@@ -854,6 +862,7 @@ Unchanged by the plan: Tier 1 rules, the Tier 2 model (classical ML scoring is n
 | `start` | Container entrypoint: migrate (with a readable error if it fails), then serve |
 | `demo [-n N] [--seed S]` | Create or reuse the merchant "Demo Shop" and send N simulated payments (default 200, seed 7); prints the secret key once, only when the merchant is created |
 | `reset-data --yes --confirm "RESET PAYBROKER DATA" [--keep-training-data] [--keep-rule-suggestions]` | Wipe the transaction data, keep the configuration; exit 2 without `--yes` or with the wrong phrase, 1 if another reset runs |
+| `rotate-vault-key --yes` | Replace the vault data key and re-encrypt every stored secret (asks for the admin password; restart other replicas afterwards, section 10.3) |
 | `reset-admin` | Forget the admin password, the vault and stored secrets (recovery) |
 
 ## 15. Data model at a glance

@@ -91,10 +91,14 @@ def _fingerprint_key(conn) -> str:
     enc = store.get(conn, _FP_KEY_ENC)
     if enc is None:
         plain = store.get(conn, _FP_KEY) or secrets.token_urlsafe(32)
-        conn.execute("INSERT INTO app_setting (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (_FP_KEY_ENC, vault.encrypt(plain)))
+        conn.execute("INSERT INTO app_setting (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                     (_FP_KEY_ENC, vault.encrypt(plain, vault.FINGERPRINT_KEY_CONTEXT)))
         store.delete(conn, _FP_KEY)
         enc = store.get(conn, _FP_KEY_ENC)
-    return vault.decrypt(enc)
+    if vault.is_legacy_token(enc):    # written before contexts existed: bind it to this row (the key value does not change)
+        enc = vault.reencrypt_legacy(enc, vault.FINGERPRINT_KEY_CONTEXT)
+        store.put(conn, _FP_KEY_ENC, enc)
+    return vault.decrypt(enc, vault.FINGERPRINT_KEY_CONTEXT)
 
 
 def tokenize(conn, merchant_id: str, number: str, exp_month: int, exp_year: int, cvc: str | None = None) -> dict:

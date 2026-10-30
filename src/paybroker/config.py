@@ -30,3 +30,9 @@ def get_settings() -> Settings:
         llm_api_key=read_secret("LLM_API_KEY", "/etc/paybroker/llm_api_key"),
         llm_chat_model=os.environ.get("LLM_CHAT_MODEL", ""),
     )
+
+
+def bind_host() -> str:
+    """The address `paybroker serve` binds to: PAYBROKER_HOST, else HOST, else all interfaces. The kit decides from this whether
+    PAYBROKER_ALLOW_ANONYMOUS may be honoured (loopback only)."""
+    return os.environ.get("PAYBROKER_HOST") or os.environ.get("HOST") or "0.0.0.0"

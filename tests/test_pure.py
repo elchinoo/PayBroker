@@ -696,16 +696,16 @@ def test_the_signed_return_url_uses_the_webhook_scheme(monkeypatch):
     import hmac
     from urllib.parse import parse_qs, urlsplit
 
-    monkeypatch.setattr("paybroker.webhooks.vault.decrypt", lambda enc: "whsec_test")
-    url = webhooks.signed_return_url("enc", "https://shop.example.com/return?order=17", "pay_abc", "AUTHORIZED", now=1_767_225_600)
+    monkeypatch.setattr("paybroker.webhooks.vault.decrypt", lambda enc, ctx="": "whsec_test")
+    url = webhooks.signed_return_url("enc", "m_1", "https://shop.example.com/return?order=17", "pay_abc", "AUTHORIZED", now=1_767_225_600)
     q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
     assert url.startswith("https://shop.example.com/return?order=17&payment_id=pay_abc&status=AUTHORIZED&timestamp=1767225600&signature=")
     assert q["order"] == "17" and not urlsplit(url).fragment
     expect = hmac.new(b"whsec_test", b"1767225600.payment_id=pay_abc&status=AUTHORIZED", hashlib.sha256).hexdigest()
     assert q["signature"] == expect and webhooks.sign("whsec_test", "1767225600", "payment_id=pay_abc&status=AUTHORIZED") == expect
 
-    def locked(_):
+    def locked(*_):
         raise webhooks.vault.VaultLocked("locked")
 
     monkeypatch.setattr("paybroker.webhooks.vault.decrypt", locked)
-    assert webhooks.signed_return_url("enc", "https://shop.example.com/r", "pay_abc", "AUTHORIZED") is None   # never an unsigned redirect
+    assert webhooks.signed_return_url("enc", "m_1", "https://shop.example.com/r", "pay_abc", "AUTHORIZED") is None   # never an unsigned redirect

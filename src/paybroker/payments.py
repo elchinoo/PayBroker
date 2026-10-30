@@ -340,7 +340,7 @@ def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict
     conn.commit()
     m.PAYMENTS.labels(status.lower(), tx["psp_selected"] or "none").inc()
     if ch["return_url"] and merchant["webhook_secret_enc"]:   # the page redirects the customer here; unsigned redirects are never made
-        link = webhooks.signed_return_url(merchant["webhook_secret_enc"], ch["return_url"], out["payment_id"], out["status"])
+        link = webhooks.signed_return_url(merchant["webhook_secret_enc"], merchant["id"], ch["return_url"], out["payment_id"], out["status"])
         if link:
             out["return_url"] = link
     return out

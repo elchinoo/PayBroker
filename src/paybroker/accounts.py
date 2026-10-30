@@ -34,9 +34,10 @@ class ChatConfig:
     key_enc: str | None = None
     trusted: bool = False         # True only for the operator-set environment account (needs no vault)
     key_plain: str = ""
+    key_context: str = ""          # where the stored key lives (account id), so the ciphertext cannot be moved to another account
 
     def api_key(self) -> str:
-        return vault.decrypt(self.key_enc) if self.key_enc else self.key_plain
+        return vault.decrypt(self.key_enc, self.key_context) if self.key_enc else self.key_plain
 
 
 def _env_url_problem(url: str) -> str | None:
@@ -105,14 +106,17 @@ def create(conn, *, name: str, provider: str, base_url: str, api_key: str | None
     if provider not in PROVIDER_IDS:
         raise AccountError("unknown provider")
     base_url = check_url(base_url)
-    enc = last4 = None
+    key = None
     if _clean(api_key):
         _need_vault(conn)
-        enc, last4 = vault.encrypt(api_key.strip()), api_key.strip()[-4:]
+        key = api_key.strip()
     if conn.execute("SELECT 1 FROM llm_account WHERE lower(name)=lower(%s)", (name,)).fetchone():
         raise AccountError("an account with that name already exists")
     row = conn.execute("INSERT INTO llm_account (name, provider, base_url, api_key_enc, api_key_last4, chat_model) "
-                       "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id", (name, provider, base_url, enc, last4, _clean(chat_model))).fetchone()
+                       "VALUES (%s,%s,%s,NULL,%s,%s) RETURNING id", (name, provider, base_url, key[-4:] if key else None,
+                                                             _clean(chat_model))).fetchone()
+    if key:      # the ciphertext is bound to the account id, which exists only now (same transaction)
+        conn.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (vault.encrypt(key, vault.llm_key_context(row["id"])), row["id"]))
     conn.commit()
     return row["id"]
 
@@ -131,7 +135,7 @@ def update(conn, account_id: int, *, name: str, provider: str, base_url: str, ap
     if _clean(api_key):
         _need_vault(conn)
         sets += ["api_key_enc=%s", "api_key_last4=%s"]
-        args += [vault.encrypt(api_key.strip()), api_key.strip()[-4:]]
+        args += [vault.encrypt(api_key.strip(), vault.llm_key_context(account_id)), api_key.strip()[-4:]]
     elif clear_key:
         sets += ["api_key_enc=NULL", "api_key_last4=NULL"]
     conn.execute(f"UPDATE llm_account SET {', '.join(sets)} WHERE id=%s", (*args, account_id))
@@ -162,7 +166,8 @@ def chat_config_for(conn, ref: int | str) -> ChatConfig:
         raise AccountError("account not found")
     if not row["chat_model"]:
         raise AccountError("this account has no chat model configured")
-    return ChatConfig(base_url=row["base_url"], model=row["chat_model"], label=row["name"], key_enc=row["api_key_enc"])
+    return ChatConfig(base_url=row["base_url"], model=row["chat_model"], label=row["name"], key_enc=row["api_key_enc"],
+                      key_context=vault.llm_key_context(row["id"]))
 
 
 def triage_account(conn) -> int | str | None:

@@ -1,6 +1,9 @@
 import argparse
 import sys
 
+import psycopg
+import psycopg.types.json
+
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="paybroker")
@@ -15,6 +18,8 @@ def main(argv: list[str] | None = None) -> int:
     rd.add_argument("--keep-training-data", action="store_true", help="keep the captured training examples")
     rd.add_argument("--keep-rule-suggestions", action="store_true", help="keep the suggested rules")
     sub.add_parser("serve", help="run the API + MCP server")
+    rk = sub.add_parser("rotate-vault-key", help="replace the vault data key and re-encrypt every stored secret (asks for the admin password)")
+    rk.add_argument("--yes", action="store_true", help="required: other replicas must be restarted afterwards")
     sub.add_parser("reset-admin", help="forget the admin password and delete stored secrets (recovery)")
     sub.add_parser("start", help="container entrypoint: migrate, then serve")
     args = p.parse_args(argv)
@@ -40,12 +45,51 @@ def main(argv: list[str] | None = None) -> int:
         with connect() as conn:
             local.reset_admin(conn)
         print("admin password, vault and stored secrets were cleared; the setup code flow is active again")
+    elif args.cmd == "rotate-vault-key":
+        return _rotate_vault_key(args)
     elif args.cmd == "reset-data":
         return _reset_data(args)
     elif args.cmd == "serve":
         _serve()
     elif args.cmd == "start":
         return _start()
+    return 0
+
+
+def _rotate_vault_key(args) -> int:
+    import getpass
+
+    from . import audit, vault
+    from .core import local
+    from .db import connect
+
+    if not args.yes:
+        print("refusing to rotate without --yes (other replicas must be restarted afterwards)", file=sys.stderr)
+        return 2
+    with connect() as conn:
+        has_password = local.admin_configured(conn)
+        password = getpass.getpass("Admin password: ") if has_password else None
+        if has_password:
+            if not local.login_password(conn, password or ""):     # also unlocks the vault
+                print("wrong admin password", file=sys.stderr)
+                return 1
+        elif not vault.try_unlock_with_platform_secret(conn):
+            print("the vault is locked and there is no platform secret to open it", file=sys.stderr)
+            return 1
+        conn.rollback()
+        try:
+            counts = vault.rotate_data_key(conn, password=password if has_password else None)
+        except (vault.VaultError, vault.VaultLocked) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        who = f"cli:{getpass.getuser()}"
+        audit.record(conn, who, "vault.rotate_key", "", {"stores": counts})      # ids and counts only: the ledger never holds a secret
+        conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s)",
+                     (who, "vault.rotate_key", psycopg.types.json.Jsonb({"stores": counts})))
+        conn.commit()
+    for name, n in counts.items():
+        print(f"{name}: {n} re-encrypted")
+    print("done: restart every other process of this app now (they still hold the old key in memory)")
     return 0
 
 
@@ -81,7 +125,11 @@ def _serve() -> None:
 
     import uvicorn
 
-    uvicorn.run("paybroker.api:app", host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "8000")))
+    from .config import bind_host
+
+    # Forwarded headers are trusted only from the proxy in front (never "*": any caller could then choose its own address).
+    uvicorn.run("paybroker.api:app", host=bind_host(), port=int(os.environ.get("PORT", "8000")), proxy_headers=True,
+                forwarded_allow_ips=os.environ.get("PAYBROKER_FORWARDED_ALLOW_IPS", "127.0.0.1"))
 
 
 def _start() -> int:

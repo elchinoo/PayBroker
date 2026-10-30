@@ -14,7 +14,7 @@ pytestmark = needs_db
 from paybroker import cards, demo, insights, vault, webhooks, worker  # noqa: E402
 from paybroker.db import connect  # noqa: E402
 
-KEY = "operator-test-key-0123456789"
+KEY = "operator-test-key-0123456789-abcdefgh"
 CSRF = {"X-PayBroker-CSRF": "1"}
 
 
@@ -412,7 +412,7 @@ def test_changing_the_platform_encryption_key_after_the_vault_exists_locks_it_un
     with connect() as conn:
         secret = conn.execute("SELECT webhook_secret_enc FROM merchant WHERE id=%s", (mid,)).fetchone()["webhook_secret_enc"]
         vault.lock()
-        assert vault.try_unlock_with_platform_secret(conn) and vault.decrypt(secret).startswith("whsec_")     # a restart unlocks by itself
+        assert vault.try_unlock_with_platform_secret(conn) and vault.decrypt(secret, vault.webhook_secret_context(mid)).startswith("whsec_")     # a restart unlocks by itself
 
         vault.lock()
         monkeypatch.setenv("PAYBROKER_ENCRYPTION_KEY", "platform-secret-two")                            # the value was changed
@@ -420,9 +420,9 @@ def test_changing_the_platform_encryption_key_after_the_vault_exists_locks_it_un
         st = vault.status(conn)
         assert st["initialized"] and not st["unlocked"] and st["auto_unlock"] and st["reason"] == "platform_key_mismatch"
         with pytest.raises(vault.VaultLocked):
-            vault.decrypt(secret)                                                                        # webhooks wait, nothing is lost
+            vault.decrypt(secret, vault.webhook_secret_context(mid))                                                    # webhooks wait, nothing is lost
         assert client.post("/api/login", json={"password": pw}, headers=CSRF).status_code == 200            # the admin password unlocks
-        assert vault.is_unlocked() and vault.decrypt(secret).startswith("whsec_")
+        assert vault.is_unlocked() and vault.decrypt(secret, vault.webhook_secret_context(mid)).startswith("whsec_")
 
         vault.lock()
         assert vault.try_unlock_with_platform_secret(conn)                                               # re-wrapped by the kit: next restart is automatic

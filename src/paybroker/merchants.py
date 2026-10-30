@@ -161,7 +161,7 @@ def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") 
         raise MerchantError(str(exc)) from exc
     secret = "whsec_" + secrets.token_urlsafe(32)
     conn.execute("UPDATE merchant SET webhook_url=%s, webhook_secret_enc=%s WHERE id=%s",
-                 (url, vault.encrypt(secret), merchant_id))
+                 (url, vault.encrypt(secret, vault.webhook_secret_context(merchant_id)), merchant_id))
     audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": url, "secret_rotated": True})
     ledger.record(conn, actor, "merchant.webhook", merchant_id,
                   {"merchant_id": merchant_id, "from": ledger.origin(old), "to": ledger.origin(url), "secret_rotated": True})

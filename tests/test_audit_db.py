@@ -14,7 +14,7 @@ pytestmark = needs_db
 from paybroker import audit  # noqa: E402
 from paybroker.db import connect  # noqa: E402
 
-KEY = "operator-test-key-0123456789"
+KEY = "operator-test-key-0123456789-abcdefgh"
 
 
 @pytest.fixture

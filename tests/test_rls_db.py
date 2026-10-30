@@ -19,7 +19,7 @@ import os  # noqa: E402
 from paybroker import audit, core, db, hardening, payments, webhooks, worker  # noqa: E402
 from paybroker.db import connect  # noqa: E402
 
-KEY = "operator-test-key-0123456789"
+KEY = "operator-test-key-0123456789-abcdefgh"
 
 
 @pytest.fixture

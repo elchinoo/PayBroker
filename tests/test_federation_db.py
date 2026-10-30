@@ -154,6 +154,29 @@ def test_single_sign_on_login_creates_a_role_bound_session(client):
     assert client.get("/api/payments").status_code == 401
 
 
+def test_sso_callback_without_the_browser_binding_cookie_is_refused(client):
+    """Login CSRF: a callback in a browser that did not start the login (no `apg_oidc_bind` cookie) never creates a session."""
+    r = client.get("/auth/login", follow_redirects=False)
+    assert "apg_oidc_bind" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
+    q = parse_qs(urlsplit(r.headers["location"]).query)
+    client.provider.nonce = q["nonce"][0]
+    client.cookies.clear()                                                          # the victim's browser never saw the cookie
+    cb = client.get("/auth/callback", params={"code": "c", "state": q["state"][0]}, follow_redirects=False)
+    assert cb.headers["location"].startswith("/?sso_error=") and "pb_session" not in cb.cookies
+    assert client.get("/api/payments").status_code == 401
+
+
+def test_sso_callback_with_a_wrong_binding_cookie_is_refused_and_the_state_is_burnt(client):
+    r = client.get("/auth/login", follow_redirects=False)
+    q = parse_qs(urlsplit(r.headers["location"]).query)
+    client.provider.nonce = q["nonce"][0]
+    client.cookies.clear()
+    client.cookies.set("apg_oidc_bind", "x" * 43)
+    cb = client.get("/auth/callback", params={"code": "c", "state": q["state"][0]}, follow_redirects=False)
+    assert cb.headers["location"].startswith("/?sso_error=") and "pb_session" not in cb.cookies
+    assert client.get("/api/payments").status_code == 401
+
+
 def test_sso_refuses_people_without_a_role_here(client):
     client.provider.id_claims = {"sub": "usr_9", "name": "Nobody", "roles": ["otherapp:admin"]}
     r = client.get("/auth/login", follow_redirects=False)

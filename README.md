@@ -467,7 +467,10 @@ PayBroker in the ecosystem must list `exposes: [paybroker.read, paybroker.metric
 | `PAYBROKER_ROLE` | `api` (HTTP only), `worker` (background jobs only) or `all` (default). |
 | `PAYBROKER_PUBLIC_URL` | Base URL used in 3-D Secure links (default: the request's own address). |
 | `PAYBROKER_ENCRYPTION_KEY[_FILE]` | Platform secret that lets the vault unlock itself after a restart (webhook secrets and AI keys need it). |
-| `PAYBROKER_API_KEY[_FILE]` | Optional static full-access operator key. Prefer operator tokens. |
+| `PAYBROKER_API_KEY[_FILE]` | Optional static full-access operator key, at least 32 characters (a shorter key is refused; generate one with `openssl rand -base64 36`). Prefer operator tokens. |
+| `PAYBROKER_HOST` (else `HOST`, default `0.0.0.0`) | Bind address. `PAYBROKER_ALLOW_ANONYMOUS` is honoured only on a loopback address (or with `PAYBROKER_ALLOW_ANONYMOUS_PUBLIC=1`). |
+| `PAYBROKER_FORWARDED_ALLOW_IPS` | Proxies whose `X-Forwarded-*` headers uvicorn trusts (default `127.0.0.1`; never `*`). |
+| `PAYBROKER_TRUSTED_HOPS` | Number of proxies in front of the app, for the client address used by rate limits and logs (default 1; 0 uses the socket address). |
 | `LLM_BASE_URL`, `LLM_API_KEY[_FILE]`, `LLM_CHAT_MODEL` | The shared LLM gateway as the built-in "env" AI account, see [AI provider](#ai-provider-the-shared-llm-gateway-first). |
 | `PAYBROKER_ALLOW_PRIVATE_URLS` | Allow AI provider and webhook URLs on private networks (local testing only). |
 | `PAYBROKER_CAPTURE_TRAINING_DATA` | `1` captures training data when no stored setting says otherwise (default off). |

@@ -18,7 +18,7 @@ def test_key_is_created_encrypted_and_never_plaintext(client):
         conn.commit()
         assert settings_store.get(conn, "card_fingerprint_key") is None
         enc = settings_store.get(conn, "card_fingerprint_key_enc")
-        assert enc and key not in enc and vault.decrypt(enc) == key
+        assert enc and key not in enc and vault.decrypt(enc, vault.FINGERPRINT_KEY_CONTEXT) == key
         assert cards._fingerprint_key(conn) == key                      # stable
 
 
@@ -29,7 +29,7 @@ def test_plaintext_key_from_an_earlier_version_is_migrated_and_fingerprints_stay
         conn.commit()
         row = cards.tokenize(conn, mid, PAN, 12, 2035, "123")
         assert settings_store.get(conn, "card_fingerprint_key") is None             # the plaintext row is gone
-        assert vault.decrypt(settings_store.get(conn, "card_fingerprint_key_enc")) == "legacy-fingerprint-key-0123456789"
+        assert vault.decrypt(settings_store.get(conn, "card_fingerprint_key_enc"), vault.FINGERPRINT_KEY_CONTEXT) == "legacy-fingerprint-key-0123456789"
         assert row["fingerprint"] == hmac_hex("legacy-fingerprint-key-0123456789", PAN)[:16]
 
 

@@ -12,7 +12,7 @@ from apgkit.netguard import NetGuard
 from apgkit.vault import Vault
 
 from . import __version__
-from .config import get_settings
+from .config import bind_host, get_settings
 
 APP = "paybroker"
 COOKIE = "pb_session"
@@ -70,5 +70,6 @@ def _on_reset(conn) -> None:
 local = LocalAuth(APP_AUTH, env_prefix="PAYBROKER", token_prefix="pbt_", token_scopes={"read", "metrics", "full"}, vault=vault,
                   on_reset=_on_reset)
 # bearer_resolvers is filled in by auth.py (merchant keys need the cache and the pool that live there)
-auth = Authenticator(APP_AUTH, local, db, cookie_name=COOKIE, verifier=fed.verifier, bearer_resolvers={})
+auth = Authenticator(APP_AUTH, local, db, cookie_name=COOKIE, verifier=fed.verifier, bearer_resolvers={},
+                     bind_host=bind_host())
 public_url_env = "PAYBROKER_PUBLIC_URL"

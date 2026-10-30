@@ -35,7 +35,10 @@ PCI-certified and must not be used with real card data. The model below is what 
 - **Single sign-on** (optional, `PAYBROKER_OIDC_ISSUER`): tokens are verified locally against the identity provider's JWKS
   (algorithm allow-list, issuer, audience, expiry); only this app's roles count and they map to permissions in `core.py`.
   Browser sign-in is authorization code + PKCE with state and nonce.
-- Failed credentials are rate limited (10 per minute per address, in memory per process; add proxy limits too).
+- Failed credentials are rate limited (10 per minute per address, in memory per process; add proxy limits too). The admin-password login counts the attempt before it hashes (one scrypt derivation, bounded concurrency, 429 over the limit, 503 when busy). The client address comes from the right-hand `X-Forwarded-For` entry (`PAYBROKER_TRUSTED_HOPS`); uvicorn trusts forwarded headers only from `PAYBROKER_FORWARDED_ALLOW_IPS` (default `127.0.0.1`).
+- Single sign-on logins are bound to the browser that started them by a short-lived `HttpOnly`, `SameSite=Lax` cookie; a callback without it is refused.
+- A static `PAYBROKER_API_KEY` must be at least 32 characters. Stored secrets (AI keys, webhook secrets, the card-fingerprint key) are AES-256-GCM tokens bound to their row; the admin can rotate the data key (`paybroker rotate-vault-key`, GUIDE section 10.3).
+- Webhook URLs are untrusted: delivery connects to the one address it validated (no second DNS lookup), refuses private and internal ranges including IPv6 forms of them, and never follows redirects.
 - The payment path authenticates through a pooled connection and answers 503 (not 500) when the database is unreachable.
 
 **Money integrity**
