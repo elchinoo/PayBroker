@@ -79,6 +79,11 @@ def _fresh(request, monkeypatch):
     core.local._setup_code = None
     request.getfixturevalue("client").cookies.clear()
     vault.lock()
+    if request.node.get_closest_marker("no_vault") is None:
+        # Tokenizing a card needs the vault (it holds the fingerprint key): most tests run with an initialised, unlocked one.
+        with connect() as conn:
+            core.vault.initialize(conn, "test-vault-password-0123")
+            conn.commit()
     yield
     request.getfixturevalue("client").cookies.clear()
     vault.lock()

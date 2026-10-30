@@ -55,6 +55,10 @@ PCI-certified and must not be used with real card data. The model below is what 
 - AI provider keys and webhook signing secrets are encrypted with a random data key that is stored only wrapped under a key
   derived from the admin password (and optionally a platform secret). A database dump alone reveals none of them. After a
   restart the vault is locked until a sign-in or the platform secret unlocks it; webhooks wait rather than fail while locked.
+- The card-fingerprint key (the HMAC key behind card fingerprints) is stored encrypted by the same vault. While the vault is locked,
+  `POST /v1/vault/tokens` answers 503 `VAULT_UNAVAILABLE` and stores nothing (a fingerprint made with another key would silently break
+  blacklists and velocity rules). A plaintext key from an earlier version is encrypted and its row deleted on the first unlock; the key
+  value is unchanged, so existing fingerprints stay valid. Resetting the vault deletes the key: new cards then get new fingerprints.
 - Provider and webhook URLs are validated before every call: `https` only (unless private URLs are explicitly allowed), no
   embedded credentials, no loopback, private, link-local or carrier-grade-NAT addresses, no redirects, bounded responses.
   Limitation: the host name is resolved once for the check and again by the HTTP client; run the server with egress rules if that matters.

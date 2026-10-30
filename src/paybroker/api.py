@@ -348,6 +348,8 @@ def _paying(fn):
         return JSONResponse(exc.body(), status_code=exc.status)
     except cards.CardError as exc:
         return JSONResponse({"error": {"code": "INVALID_CARD", "message": str(exc)}}, status_code=422)
+    except (vault.VaultLocked, vault.VaultError) as exc:          # fixed, secret-free messages: the vault is locked or a stored key is unreadable
+        return JSONResponse({"error": {"code": "VAULT_UNAVAILABLE", "message": str(exc)}}, status_code=503)
     except (psycopg.OperationalError, RuntimeError) as exc:
         raise _db_unavailable() from exc
 

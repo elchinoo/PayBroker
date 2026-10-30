@@ -64,6 +64,7 @@ APP_AUTH = AppAuth(APP, fed.client_id, ROLE_PERMISSIONS, SCOPE_PERMISSIONS)
 def _on_reset(conn) -> None:
     conn.execute("UPDATE llm_account SET api_key_enc = NULL, api_key_last4 = NULL")
     conn.execute("UPDATE merchant SET webhook_secret_enc = NULL")
+    conn.execute("DELETE FROM app_setting WHERE key = 'card_fingerprint_key_enc'")    # unreadable now: a new key (new fingerprints) on next use
 
 
 local = LocalAuth(APP_AUTH, env_prefix="PAYBROKER", token_prefix="pbt_", token_scopes={"read", "metrics", "full"}, vault=vault,

@@ -33,6 +33,7 @@ packages = ["src/paybroker"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["no_vault: start the test with no vault set up (the default fixture initialises one)"]
 
 [tool.ruff]
 line-length = 110

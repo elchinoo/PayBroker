@@ -10,6 +10,7 @@ import secrets
 from datetime import date
 
 from . import settings_store as store
+from . import vault
 from .ids import hmac_hex, new_id
 
 TEST_BIN = "999999"
@@ -34,7 +35,8 @@ TEST_CARDS = {
     "4000002500003155": ("visa", "requires_3ds"),          # the issuer always demands 3-D Secure
     "4100000000000019": ("visa", "stolen_card"),           # issuer declines as stolen
 }
-_FP_KEY = "card_fingerprint_key"
+_FP_KEY = "card_fingerprint_key"            # the plaintext row of earlier versions: migrated and deleted on first unlock
+_FP_KEY_ENC = "card_fingerprint_key_enc"    # the key, encrypted by the vault
 
 
 class CardError(ValueError):
@@ -78,11 +80,21 @@ def make_test_number(rng: secrets.SystemRandom | None = None, prefix: str = TEST
 
 
 def _fingerprint_key(conn) -> str:
-    key = store.get(conn, _FP_KEY)
-    if key is None:
-        key = secrets.token_urlsafe(32)
-        store.put(conn, _FP_KEY, key)
-    return key
+    """The HMAC key behind card fingerprints, kept in the database only encrypted by the vault.
+
+    Fails closed: while the vault is locked (or the stored key cannot be read) this raises VaultLocked / VaultError and no card is
+    tokenized, because a fingerprint made with a different key would silently break blacklists and velocity rules. A plaintext key left
+    by an earlier version is encrypted and its row deleted in the same transaction (the key value is unchanged, so existing
+    fingerprints stay valid). Two racing first callers agree on the winner."""
+    if not vault.is_unlocked() and not vault.try_unlock_with_platform_secret(conn):
+        raise vault.VaultLocked("Stored secrets are locked. An administrator must unlock the vault before cards can be tokenized.")
+    enc = store.get(conn, _FP_KEY_ENC)
+    if enc is None:
+        plain = store.get(conn, _FP_KEY) or secrets.token_urlsafe(32)
+        conn.execute("INSERT INTO app_setting (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (_FP_KEY_ENC, vault.encrypt(plain)))
+        store.delete(conn, _FP_KEY)
+        enc = store.get(conn, _FP_KEY_ENC)
+    return vault.decrypt(enc)
 
 
 def tokenize(conn, merchant_id: str, number: str, exp_month: int, exp_year: int, cvc: str | None = None) -> dict:

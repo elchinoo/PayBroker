@@ -361,6 +361,7 @@ def test_rule_suggestion_needs_a_person_and_is_revalidated(client, op):
 
 
 # ---- webhooks ---------------------------------------------------------------------------------------------------
+@pytest.mark.no_vault          # starts without a vault, like a fresh install
 def test_webhooks_are_signed_and_retried(client, shop, op, monkeypatch):
     mid, sk, pk = shop
     public = [(2, 1, 6, "", ("93.184.216.34", 443))]
@@ -398,6 +399,7 @@ def test_webhooks_are_signed_and_retried(client, shop, op, monkeypatch):
     assert body["type"] == "payment.authorized" and body["data"]["payment_id"] == p["payment_id"]
 
 
+@pytest.mark.no_vault          # starts without a vault, like a fresh install
 def test_changing_the_platform_encryption_key_after_the_vault_exists_locks_it_until_the_admin_signs_in(client, shop, op, monkeypatch):
     """Documented in docs/GUIDE.md: the old wrap cannot be opened with the new value (locked, reason given); the admin password
     unlocks and the kit re-wraps under the new value, so the next restart unlocks by itself."""
