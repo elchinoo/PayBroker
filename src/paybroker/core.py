@@ -4,15 +4,18 @@ Permissions are what the code checks (`cases:review`); roles (given to people by
 services and local API tokens) are mapped onto them here. Merchant API keys are a separate kind of principal that can only
 reach the payment API (`payments:write`, `vault:tokenize`), never an operator route.
 """
+import dataclasses
+
 from apgkit import metrics as metrics_mod
 from apgkit.auth import AppAuth, Authenticator, LocalAuth, from_env
+from apgkit.auth.rp import RelyingParty
 from apgkit.db import Database
 from apgkit.llm import LLMClient
 from apgkit.netguard import NetGuard
 from apgkit.vault import Vault
 
 from . import __version__
-from .config import bind_host, get_settings
+from .config import bind_host, get_settings, pool_max, read_secret
 
 APP = "paybroker"
 COOKIE = "pb_session"
@@ -20,7 +23,7 @@ CSRF_HEADER = "x-paybroker-csrf"
 SECRET_PREFIX, PUBLISHABLE_PREFIX = "sk_test_", "pk_test_"
 ADMIN_SCOPE = "paybroker.admin"
 
-db = Database(lambda: get_settings().database_url, vector=True, pool_max=get_settings().pool_max)
+db = Database(lambda: get_settings().database_url, vector=True, pool_max=pool_max())
 vault = Vault("PAYBROKER")
 netguard = NetGuard("PAYBROKER_ALLOW_PRIVATE_URLS")
 llm = LLMClient(netguard, vault)
@@ -58,6 +61,10 @@ SCOPE_PERMISSIONS = {
     ADMIN_SCOPE: frozenset({"merchants:manage", "payments:read"}),
 }
 fed = from_env("PAYBROKER", APP)
+if fed.rp is not None:
+    # The kit decides "confidential or public client" by reading the client secret at import, which with sealed boot does not exist
+    # yet. Rebuild the relying party so the secret is read at use time (empty still means a public client, PKCE only).
+    fed = dataclasses.replace(fed, rp=RelyingParty(fed.issuer, fed.client_id, lambda: read_secret("PAYBROKER_OIDC_CLIENT_SECRET")))
 APP_AUTH = AppAuth(APP, fed.client_id, ROLE_PERMISSIONS, SCOPE_PERMISSIONS)
 
 

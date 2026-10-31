@@ -8,9 +8,11 @@ from pathlib import Path
 import psycopg
 from apgkit import insights as insights_mod
 from apgkit import masking
+from apgkit import sealed as sealing
 from apgkit.auth import Principal, TokenError, clear_binding
 from apgkit.auth.rp import BINDING_COOKIE, safe_return_to
 from apgkit.guard import SecurityGuard
+from apgkit.vault import sealed_unlocker
 from apgkit.web import is_https, mount_kit_static, public_url
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -184,7 +186,23 @@ class McpGuard:
         await self.app(scope, receive, send)
 
 
-app = FastAPI(title="PayBroker", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+# Sealed boot (agentpg-kit 0.4.1): with APGKIT_SEALED set the app starts sealed (503 except /_seal/*, health) and runs its lifespan
+# (migrations, worker, masking loop) only after the operator unseals it. With no blob configured this is identical to before.
+sealed = sealing.Sealed.from_env()
+app = FastAPI(title="PayBroker", version=__version__, lifespan=sealed.deferred(lifespan), docs_url=None, redoc_url=None, openapi_url=None)
+sealing.install(app, sealed)
+
+
+def _migrate_when_unsealed(_sealed, _passphrase) -> None:
+    """`paybroker start` cannot migrate before serving when sealed (no database URL yet), so it happens here, before the vault opens.
+    A failure leaves the app sealed and says why in the unseal answer."""
+    if sealed.enabled:
+        from .migrate import run
+        run()
+
+
+sealed.on_unsealed(_migrate_when_unsealed)
+sealed.on_unsealed(sealed_unlocker(core.vault, connect))
 app.add_middleware(McpGuard)
 
 

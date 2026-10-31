@@ -133,6 +133,12 @@ def _serve() -> None:
 
 
 def _start() -> int:
+    from apgkit import sealed as sealing
+
+    if sealing.Sealed.from_env().enabled:      # sealed boot: no database URL until the operator unseals; the API migrates then
+        print("sealed boot: migrations run after unseal")
+        _serve()
+        return 0
     from .migrate import run
 
     try:

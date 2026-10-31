@@ -493,6 +493,19 @@ A sandbox that pauses itself answers an empty `503`: `agentpg sandbox resume <sa
 until you sign in (or `PAYBROKER_ENCRYPTION_KEY` is set), so webhooks wait instead of failing. AgentPG sandboxes speak HTTP and
 Postgres only, which is all this needs.
 
+### Sealed boot
+
+Anything in a deployment's environment, config files or image is readable by whoever can reach the platform. With sealed boot the
+only thing deployed is `APGKIT_SEALED`, one blob encrypted (AES-256-GCM) under an operator passphrase that is never stored on the
+platform. Make the blob with `ecoctl seal` from agentpg-ecosystem (put `DATABASE_URL`, `PAYBROKER_OIDC_CLIENT_SECRET`,
+`LLM_API_KEY`, `PAYBROKER_API_KEY` in it) and set nothing else secret: no `DATABASE_URL`, no `PAYBROKER_ENCRYPTION_KEY`.
+
+The app starts sealed: every route answers `503` except `/_seal/*` and the health checks (`/healthz`, `/health`, `/livez`). The
+operator unseals it (`GET /_seal/key`, then `POST /_seal/unseal` with the passphrase encrypted to that key; `ecoctl` does both).
+Only then does PayBroker apply its migrations, open the vault with the same passphrase (creating it on first start, so the
+card-fingerprint key and webhook secrets stay protected by it) and start the worker. A restart seals it again. With no blob
+configured nothing changes. Details: agentpg-kit `docs/GUIDE.md`, section 7.3.3.
+
 ## Limits worth knowing
 
 - The connectors are simulations; the 3-D Secure page lets the tester choose the outcome.
