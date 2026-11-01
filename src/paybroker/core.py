@@ -5,6 +5,7 @@ services and local API tokens) are mapped onto them here. Merchant API keys are 
 reach the payment API (`payments:write`, `vault:tokenize`), never an operator route.
 """
 import dataclasses
+import threading
 
 from apgkit import metrics as metrics_mod
 from apgkit.auth import AppAuth, Authenticator, LocalAuth, from_env
@@ -24,7 +25,33 @@ SECRET_PREFIX, PUBLISHABLE_PREFIX = "sk_test_", "pk_test_"
 ADMIN_SCOPE = "paybroker.admin"
 
 db = Database(lambda: get_settings().database_url, vector=True, pool_max=pool_max())
-vault = Vault("PAYBROKER")
+
+
+class _RowMacVault(Vault):
+    """The kit's vault, plus: when it is created with the admin password (a standalone install setting its first password, or after
+    `reset-admin`) the rows that exist at that moment are signed, because no key existed before and nothing could have carried a MAC.
+    Sealed boot does NOT do this (the vault is created at the first unseal): there `paybroker adopt-rowmacs` is the explicit, deliberate
+    step, so a database whose vault records were wiped cannot launder planted rows by being re-initialised."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._sealing = threading.local()
+
+    def initialize(self, conn, password: str) -> None:
+        super().initialize(conn, password)
+        if not getattr(self._sealing, "on", False):
+            from . import rowmac
+            rowmac.adopt_tables(conn)                  # in the caller's transaction: it commits right after
+
+    def unlock_sealed(self, conn, passphrase):
+        self._sealing.on = True
+        try:
+            return super().unlock_sealed(conn, passphrase)
+        finally:
+            self._sealing.on = False
+
+
+vault = _RowMacVault("PAYBROKER")
 netguard = NetGuard("PAYBROKER_ALLOW_PRIVATE_URLS")
 llm = LLMClient(netguard, vault)
 metrics = metrics_mod.Metrics(APP, __version__)
@@ -72,6 +99,8 @@ def _on_reset(conn) -> None:
     conn.execute("UPDATE llm_account SET api_key_enc = NULL, api_key_last4 = NULL")
     conn.execute("UPDATE merchant SET webhook_secret_enc = NULL")
     conn.execute("DELETE FROM app_setting WHERE key = 'card_fingerprint_key_enc'")    # unreadable now: a new key (new fingerprints) on next use
+    from . import rowmac
+    rowmac.clear(conn)       # the data key is gone, no row MAC can verify: `paybroker adopt-rowmacs` signs afresh
 
 
 local = LocalAuth(APP_AUTH, env_prefix="PAYBROKER", token_prefix="pbt_", token_scopes={"read", "metrics", "full"}, vault=vault,

@@ -8,7 +8,7 @@ this payment (percentage fee plus the fixed fee spread over the amount) and Late
 import threading
 import time
 
-from . import psp
+from . import psp, rowmac
 
 PREFERRED_BONUS = 10.0
 _cache: dict = {"at": 0.0, "rows": []}
@@ -29,7 +29,8 @@ def connectors(conn) -> list[dict]:
     with _lock:
         if time.monotonic() - _cache["at"] < TTL:
             return _cache["rows"]
-    rows = conn.execute("SELECT * FROM psp_connector ORDER BY name").fetchall()
+    heal_seeds(conn)
+    rows = rowmac.valid("psp_connector", conn.execute("SELECT * FROM psp_connector ORDER BY name").fetchall())   # unsigned = not a connector
     conn.commit()
     with _lock:
         _cache.update(at=time.monotonic(), rows=rows)
@@ -98,5 +99,18 @@ def seed_connectors(conn) -> None:
         conn.execute("INSERT INTO psp_connector (name, label, currencies, regions, fee_bps, fixed_fee_cents, base_latency_ms, "
                      "base_auth_rate, auth_ewma, latency_ewma) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (name) DO NOTHING",
                      (name, label, cur, regions, bps, fixed, lat, auth, auth, lat))
+    heal_seeds(conn)
     conn.commit()
     invalidate()
+
+
+def heal_seeds(conn) -> None:
+    """Sign the built-in connectors that are still unsigned (seeded while the vault was locked, e.g. before an unseal), but ONLY a row
+    that is exactly what the seed defines: a planted or edited row never becomes valid this way."""
+    if not rowmac.enforced():
+        return
+    for name, _label, cur, regions, bps, fixed, _lat, _auth in SEED:
+        row = conn.execute("SELECT * FROM psp_connector WHERE name=%s AND mac IS NULL", (name,)).fetchone()
+        if row and row["enabled"] and sorted(row["currencies"]) == sorted(cur) and sorted(row["regions"]) == sorted(regions) \
+                and row["fee_bps"] == bps and row["fixed_fee_cents"] == fixed:
+            rowmac.seal(conn, "psp_connector", "name=%s", (name,))

@@ -4,7 +4,7 @@ import secrets
 from psycopg.types.json import Jsonb
 
 from . import audit as ledger
-from . import auth, origins, vault
+from . import auth, origins, rowmac, vault
 from .ids import new_id
 from .netguard import UnsafeURL, check_url
 
@@ -59,7 +59,7 @@ def clean_settings(raw: dict, psp_names: set[str]) -> dict:
 
 
 def psp_names(conn) -> set[str]:
-    return {r["name"] for r in conn.execute("SELECT name FROM psp_connector")}
+    return {r["name"] for r in rowmac.valid("psp_connector", conn.execute("SELECT * FROM psp_connector").fetchall())}
 
 
 def clean_origins(raw) -> list[str]:
@@ -71,7 +71,8 @@ def clean_origins(raw) -> list[str]:
 
 def origin_listed(conn, origin: str) -> bool:
     """Does ANY active merchant list this origin? What a CORS preflight can ask: it carries no credential to tell the merchant."""
-    return conn.execute("SELECT 1 FROM merchant WHERE status='active' AND %s = ANY(allowed_origins) LIMIT 1", (origin,)).fetchone() is not None
+    rows = conn.execute("SELECT * FROM merchant WHERE status='active' AND %s = ANY(allowed_origins)", (origin,)).fetchall()
+    return any(rowmac.verify_row("merchant", r) for r in rows)
 
 
 def audit(conn, actor: str, action: str, detail: dict) -> None:
@@ -96,6 +97,7 @@ def create(conn, name: str, settings: dict | None = None, allowed_origins: list[
         conn.rollback()
         raise Duplicate("a merchant with that name already exists")
     conn.execute("INSERT INTO merchant (id, name, settings, allowed_origins) VALUES (%s,%s,%s,%s)", (mid, name, Jsonb(s), o))
+    rowmac.seal(conn, "merchant", "id=%s", (mid,))
     audit(conn, actor, "merchant.create", {"merchant_id": mid, "name": name})
     if o:
         _audit_origins(conn, actor, mid, [], o)
@@ -106,19 +108,21 @@ def create(conn, name: str, settings: dict | None = None, allowed_origins: list[
 
 def get(conn, merchant_id: str) -> dict:
     row = conn.execute("SELECT id, name, status, webhook_url, (webhook_secret_enc IS NOT NULL) AS has_webhook_secret, "
-                       "settings, allowed_origins, created_at FROM merchant WHERE id=%s", (merchant_id,)).fetchone()
-    if not row:
+                       "settings, allowed_origins, created_at, mac FROM merchant WHERE id=%s", (merchant_id,)).fetchone()
+    if not row or not rowmac.verify_row("merchant", row):         # no valid MAC: as good as absent
         raise NotFound("merchant not found")
+    row = rowmac.strip(row)
     row["settings"] = DEFAULTS | row["settings"]
     return row
 
 
 def listing(conn, name: str | None = None) -> list[dict]:
     """All merchants, newest first; `name` keeps those whose name is exactly that (names are unique for new merchants)."""
-    return conn.execute(
-        "SELECT m.id, m.name, m.status, m.webhook_url, m.allowed_origins, m.created_at, "
+    rows = conn.execute(
+        "SELECT m.id, m.name, m.status, m.webhook_url, m.allowed_origins, m.settings, m.created_at, m.mac, "
         "(SELECT count(*) FROM transaction t WHERE t.merchant_id=m.id) AS payments "
         "FROM merchant m WHERE (%s::text IS NULL OR m.name = %s) ORDER BY m.created_at DESC", (name, name)).fetchall()
+    return [{k: v for k, v in r.items() if k not in ("settings", "mac")} for r in rowmac.valid("merchant", rows)]
 
 
 def update(conn, merchant_id: str, *, name: str | None, status: str | None, settings: dict | None,
@@ -129,8 +133,8 @@ def update(conn, merchant_id: str, *, name: str | None, status: str | None, sett
         raise MerchantError("status must be active or suspended")
     s = clean_settings({**cur["settings"], **settings}, psp_names(conn)) if settings is not None else cur["settings"]
     o = clean_origins(allowed_origins) if allowed_origins is not None else cur["allowed_origins"]
-    conn.execute("UPDATE merchant SET name=%s, status=%s, settings=%s, allowed_origins=%s WHERE id=%s",
-                 ((name or cur["name"]).strip()[:100], status or cur["status"], Jsonb(s), o, merchant_id))
+    rowmac.update(conn, "merchant", "name=%s, status=%s, settings=%s, allowed_origins=%s",
+                  ((name or cur["name"]).strip()[:100], status or cur["status"], Jsonb(s), o), "id=%s", (merchant_id,))
     if o != cur["allowed_origins"]:
         _audit_origins(conn, actor, merchant_id, cur["allowed_origins"], o)
     new_name = (name or cur["name"]).strip()[:100]
@@ -147,7 +151,7 @@ def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") 
     The audit row names the merchant and the URL (the secret is never in it)."""
     old = get(conn, merchant_id)["webhook_url"]
     if not url:
-        conn.execute("UPDATE merchant SET webhook_url=NULL, webhook_secret_enc=NULL WHERE id=%s", (merchant_id,))
+        rowmac.update(conn, "merchant", "webhook_url=NULL, webhook_secret_enc=NULL", (), "id=%s", (merchant_id,))
         audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": None})
         ledger.record(conn, actor, "merchant.webhook", merchant_id,
                       {"merchant_id": merchant_id, "from": ledger.origin(old), "to": None})
@@ -160,8 +164,8 @@ def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") 
     except UnsafeURL as exc:
         raise MerchantError(str(exc)) from exc
     secret = "whsec_" + secrets.token_urlsafe(32)
-    conn.execute("UPDATE merchant SET webhook_url=%s, webhook_secret_enc=%s WHERE id=%s",
-                 (url, vault.encrypt(secret, vault.webhook_secret_context(merchant_id)), merchant_id))
+    rowmac.update(conn, "merchant", "webhook_url=%s, webhook_secret_enc=%s",
+                  (url, vault.encrypt(secret, vault.webhook_secret_context(merchant_id))), "id=%s", (merchant_id,))
     audit(conn, actor, "merchant.webhook", {"merchant_id": merchant_id, "from": old, "to": url, "secret_rotated": True})
     ledger.record(conn, actor, "merchant.webhook", merchant_id,
                   {"merchant_id": merchant_id, "from": ledger.origin(old), "to": ledger.origin(url), "secret_rotated": True})

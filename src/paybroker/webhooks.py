@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from . import vault
+from . import rowmac, vault
 from .ids import hmac_hex
 from .netguard import UnsafeURL, resolve_url
 
@@ -50,6 +50,10 @@ def deliver(conn, event_id: str) -> tuple[str, str]:
                       "FROM webhook_event e JOIN merchant m ON m.id=e.merchant_id WHERE e.event_id=%s", (event_id,)).fetchone()
     if not ev or ev["status"] == "delivered":
         return "skipped", "gone or already delivered"
+    mer = conn.execute("SELECT id, status, webhook_url, allowed_origins, settings, mac FROM merchant WHERE id=%s", (ev["merchant_id"],)).fetchone()
+    if not rowmac.verify_row("merchant", mer):        # a planted or edited merchant row (a redirected webhook URL) is never delivered to
+        conn.rollback()
+        return "locked", "the merchant row has no valid row MAC (see `paybroker adopt-rowmacs`): delivery waits"
     if not ev["webhook_url"] or not ev["webhook_secret_enc"]:
         conn.execute("UPDATE webhook_event SET status='skipped' WHERE event_id=%s", (event_id,))
         conn.commit()

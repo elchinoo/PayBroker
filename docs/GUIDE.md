@@ -862,6 +862,7 @@ Unchanged by the plan: Tier 1 rules, the Tier 2 model (classical ML scoring is n
 | `start` | Container entrypoint: migrate (with a readable error if it fails), then serve |
 | `demo [-n N] [--seed S]` | Create or reuse the merchant "Demo Shop" and send N simulated payments (default 200, seed 7); prints the secret key once, only when the merchant is created |
 | `reset-data --yes --confirm "RESET PAYBROKER DATA" [--keep-training-data] [--keep-rule-suggestions]` | Wipe the transaction data, keep the configuration; exit 2 without `--yes` or with the wrong phrase, 1 if another reset runs |
+| `adopt-rowmacs` | Sign existing rows that have no row MAC (asks for the admin password; trusts the database as it is now; README, "Row MACs") |
 | `rotate-vault-key --yes` | Replace the vault data key and re-encrypt every stored secret (asks for the admin password; restart other replicas afterwards, section 10.3) |
 | `reset-admin` | Forget the admin password, the vault and stored secrets (recovery) |
 

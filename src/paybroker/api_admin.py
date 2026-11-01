@@ -20,6 +20,7 @@ from . import (
     maintenance,
     merchants,
     origins,
+    rowmac,
     rules,
     suggest,
     triage_limits,
@@ -217,6 +218,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             except psycopg.errors.UniqueViolation as exc:
                 conn.rollback()
                 raise HTTPException(409, "a rule with that name already exists") from exc
+            rowmac.seal(conn, "fraud_rule", "id=%s", (row["id"],))
             audit.record(conn, _who(p), "rule.create", str(row["id"]), {
                 "rule_id": row["id"], "name": body.name.strip(), "action": body.action, "enabled": True, "definition": body.definition})
             conn.commit()
@@ -226,7 +228,9 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     @r.patch("/rules/{rule_id}")
     def patch_rule(rule_id: int, body: RulePatch, p=manage_rules):
         with connect() as conn:
-            row = conn.execute("UPDATE fraud_rule SET enabled=%s WHERE id=%s RETURNING id, name, action", (body.enabled, rule_id)).fetchone()
+            rules.heal_seeds(conn)
+            n = rowmac.update(conn, "fraud_rule", "enabled=%s", (body.enabled,), "id=%s", (rule_id,))
+            row = conn.execute("SELECT id, name, action FROM fraud_rule WHERE id=%s", (rule_id,)).fetchone() if n else None
             if row:
                 audit.record(conn, _who(p), "rule.enable" if body.enabled else "rule.disable", str(rule_id),
                              {"rule_id": rule_id, "name": row["name"], "action": row["action"], "enabled": body.enabled})
@@ -276,9 +280,9 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     @r.get("/blacklist", dependencies=[read])
     def blacklist():
         with connect() as conn:
-            rows = conn.execute("SELECT id, kind, value, reason, source, created_at FROM blacklist ORDER BY id DESC LIMIT 500").fetchall()
+            rows = conn.execute("SELECT id, kind, value, reason, source, created_at, mac FROM blacklist ORDER BY id DESC LIMIT 500").fetchall()
             conn.rollback()
-        return {"items": rows}
+        return {"items": rowmac.flag("blacklist", rows)}
 
     @r.post("/blacklist", status_code=201)
     def add_blacklist(body: BlacklistBody, p=review):
@@ -286,6 +290,7 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             row = conn.execute("INSERT INTO blacklist (kind, value, reason) VALUES (%s,%s,%s) ON CONFLICT (kind, value) DO NOTHING RETURNING id",
                                (body.kind, body.value.strip(), body.reason)).fetchone()
             if row:
+                rowmac.seal(conn, "blacklist", "id=%s", (row["id"],))
                 audit.record(conn, _who(p), "blocklist.add", str(row["id"]), {
                     "entry_id": row["id"], "kind": body.kind, "value": audit.mask_value(body.kind, body.value.strip()),
                     "reason": body.reason, "source": "manual"})
@@ -412,15 +417,17 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
     def connectors():
         with connect() as conn:
             rows = conn.execute("SELECT name, label, enabled, currencies, regions, fee_bps, fixed_fee_cents, base_latency_ms, base_auth_rate, "
-                                "auth_ewma, latency_ewma, attempts, successes FROM psp_connector ORDER BY name").fetchall()
+                                "auth_ewma, latency_ewma, attempts, successes, mac FROM psp_connector ORDER BY name").fetchall()
             conn.rollback()
-        return {"items": rows}
+        return {"items": rowmac.flag("psp_connector", rows)}
 
     @r.patch("/connectors/{name}")
     def patch_connector(name: str, body: ConnectorPatch, p=merch):
         from . import routing
         with connect() as conn:
-            row = conn.execute("UPDATE psp_connector SET enabled=%s WHERE name=%s RETURNING name", (body.enabled, name)).fetchone()
+            routing.heal_seeds(conn)
+            n = rowmac.update(conn, "psp_connector", "enabled=%s", (body.enabled,), "name=%s", (name,))
+            row = {"name": name} if n else None
             if row:
                 audit.record(conn, _who(p), "connector.update", name, {"connector": name, "enabled": body.enabled})
             conn.commit()

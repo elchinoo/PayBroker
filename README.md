@@ -506,6 +506,30 @@ Only then does PayBroker apply its migrations, open the vault with the same pass
 card-fingerprint key and webhook secrets stay protected by it) and start the worker. A restart seals it again. With no blob
 configured nothing changes. Details: agentpg-kit `docs/GUIDE.md`, section 7.3.3.
 
+## Row MACs
+
+Rows that grant access or carry trust are signed with an HMAC under a subkey of the vault data key, so a database **write** without
+that key (stolen database credentials) cannot plant them: `merchant` (id, status, webhook URL, allowed origins, settings),
+`merchant_key` (id, merchant, kind, key hash, revoked_at), `psp_connector` (name, enabled, currencies, regions, fees), `fraud_rule`
+(id, name, definition, action, enabled) and `blacklist` (id, kind, value). The kit signs `web_session` and `api_token` the same way.
+A row with a missing or wrong MAC is treated as absent: a planted merchant key does not authenticate, a planted or edited merchant
+is not found and gets no webhook, a planted connector is never routed to, a planted rule or blocklist entry does nothing. It is
+logged once per row (table and key only, never values), counted (`payment_broker_tampered_rows_total`) and recorded in the audit
+ledger, and listings mark such rows `verified: false`. The app signs in the same transaction as every write, and `rotate-vault-key`
+signs the rows again under the new key.
+
+It is enforced only while the vault is unlocked (always, with sealed boot). With the vault locked (development, tests, a standalone
+install before its first password) nothing is checked and behaviour is unchanged. Setting the first admin password signs the rows
+that exist at that moment. For a database from before row MACs, run `paybroker adopt-rowmacs` once after migrating, on a database you
+believe untampered: it asks for the admin password and signs every unsigned row, trusting the database as it is now. Until then
+those rows are ignored once the vault is open. After sealed boot's first unseal, or after `reset-admin`, run it as well.
+
+Honest limits: an older authentic row copied back from a backup verifies (replay); deleting a row is not detected (a deleted
+blocklist entry or rule simply stops acting); columns outside the signed set can be edited freely (merchant and rule names and
+descriptions, timestamps, usage counters, connector labels and the simulated connectors' behaviour); `merchant.webhook_secret_enc`
+is not in the MAC because it is already an authenticated ciphertext bound to its merchant; a key's `last_used_at` is not signed. The
+`audit_ledger` hash-chains by itself and is left alone. Someone who can run code inside the app, or who holds the data key, can sign.
+
 ## Limits worth knowing
 
 - The connectors are simulations; the 3-D Secure page lets the tester choose the outcome.

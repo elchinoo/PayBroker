@@ -12,7 +12,20 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import audit, cards, features, fraud, ml, namematch, origins, routing, rules, training_data, webhooks
+from . import (
+    audit,
+    cards,
+    features,
+    fraud,
+    ml,
+    namematch,
+    origins,
+    routing,
+    rowmac,
+    rules,
+    training_data,
+    webhooks,
+)
 from . import metrics as m
 from .ids import new_id
 
@@ -311,7 +324,11 @@ def complete_3ds(conn, challenge_id: str, outcome: str, public_url: str) -> dict
         conn.commit()
         raise PaymentError(410, "CHALLENGE_EXPIRED", "the challenge expired; the payment was declined")
     tx = conn.execute("SELECT * FROM transaction WHERE id=%s FOR UPDATE", (ch["transaction_id"],)).fetchone()
-    merchant = conn.execute("SELECT id, name, status, webhook_url, webhook_secret_enc, settings FROM merchant WHERE id=%s", (tx["merchant_id"],)).fetchone()
+    merchant = conn.execute("SELECT id, name, status, webhook_url, webhook_secret_enc, settings, allowed_origins, mac FROM merchant WHERE id=%s",
+                            (tx["merchant_id"],)).fetchone()
+    if not rowmac.verify_row("merchant", merchant):       # no valid MAC: as good as absent
+        conn.rollback()
+        raise PaymentError(404, "MERCHANT_NOT_FOUND", "no such merchant")
     fa = conn.execute("SELECT * FROM fraud_assessment WHERE transaction_id=%s", (tx["id"],)).fetchone()
     fields: dict = {}
     if outcome != "succeeded":

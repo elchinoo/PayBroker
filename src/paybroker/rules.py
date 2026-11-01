@@ -10,6 +10,8 @@ import time
 
 from psycopg.types.json import Jsonb
 
+from . import rowmac
+
 NUMERIC_FIELDS = {
     "amount", "tx_count_1h", "tx_count_24h", "tx_sum_amount_24h_cents", "distinct_cards_used_7d",
     "avg_transaction_amount_30d_cents", "historical_chargeback_count", "ip_tx_count_1h", "device_tx_count_1h",
@@ -117,8 +119,10 @@ def _load(conn) -> tuple[list[dict], set]:
     with _lock:
         if time.monotonic() - _cache["at"] < TTL:
             return _cache["rules"], _cache["black"]
-    rules = conn.execute("SELECT id, name, definition, action FROM fraud_rule WHERE enabled ORDER BY id").fetchall()
-    black = {(r["kind"], r["value"]) for r in conn.execute("SELECT kind, value FROM blacklist")}
+    heal_seeds(conn)
+    # an unsigned or edited row is not a rule and not a blocklist entry (see rowmac.py)
+    rules = rowmac.valid("fraud_rule", conn.execute("SELECT id, name, definition, action, enabled, mac FROM fraud_rule WHERE enabled ORDER BY id").fetchall())
+    black = {(r["kind"], r["value"]) for r in rowmac.valid("blacklist", conn.execute("SELECT id, kind, value, mac FROM blacklist").fetchall())}
     conn.commit()
     with _lock:
         _cache.update(at=time.monotonic(), rules=rules, black=black)
@@ -129,8 +133,20 @@ def seed_defaults(conn) -> None:
     for name, desc, action, defn in DEFAULT_RULES:
         conn.execute("INSERT INTO fraud_rule (name, description, definition, action, created_by) VALUES (%s,%s,%s,%s,'system') "
                      "ON CONFLICT (name) DO NOTHING", (name, desc, Jsonb(defn), action))
+    heal_seeds(conn)
     conn.commit()
     invalidate()
+
+
+def heal_seeds(conn) -> None:
+    """Sign the built-in rules that are still unsigned (seeded while the vault was locked, e.g. before an unseal), but ONLY a row that is
+    exactly what DEFAULT_RULES defines: a planted or edited row never becomes valid this way."""
+    if not rowmac.enforced():
+        return
+    for name, _desc, action, defn in DEFAULT_RULES:
+        row = conn.execute("SELECT id, definition, action, enabled FROM fraud_rule WHERE name=%s AND mac IS NULL", (name,)).fetchone()
+        if row and row["enabled"] and row["action"] == action and row["definition"] == defn:
+            rowmac.seal(conn, "fraud_rule", "id=%s", (row["id"],))
 
 
 def run(conn, ctx: dict, *, ip: str | None, device: str | None, card_fp: str | None, bin_: str, email_domain: str | None,

@@ -101,6 +101,9 @@ PCI-certified and must not be used with real card data. The model below is what 
   keys, users or secrets, and records who ran it, when and what it deleted in `admin_audit` (counts and options only, no secrets). The
   command line needs `--yes` and the phrase, and is for people who already have database access.
 
+**Row MACs**
+- Merchants, merchant keys, connectors, fraud rules and blocklist entries are signed with an HMAC under a subkey of the vault data key; a database write without the key cannot plant them (a row without a valid MAC is treated as absent, logged once by table and key, counted and audited). Enforced while the vault is unlocked (always with sealed boot); `paybroker adopt-rowmacs` signs rows from before this existed. Limits: replay of an older authentic row from a backup, row deletion, and columns outside the signed set are not covered (README, "Row MACs").
+
 **Hardening**
 - Strict `Content-Security-Policy` (no inline script or style), `nosniff`, no framing, no referrer, no caching. All text
   reaches the page through `textContent`. Bodies are size-capped and unknown fields are rejected.

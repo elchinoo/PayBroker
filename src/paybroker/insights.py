@@ -1,5 +1,7 @@
 """Read-only views for operators (the dashboard, the MCP tools). Nothing here changes data, and nothing returns a card
 number, a CVV, a key or a webhook secret: the broker never holds them in the clear."""
+from . import rowmac
+
 STATUSES = ("PROCESSING", "REQUIRES_ACTION", "AUTHORIZED", "CAPTURED", "PARTIALLY_REFUNDED", "REFUNDED", "VOIDED", "DECLINED", "FAILED")
 
 
@@ -90,7 +92,8 @@ def list_cases(conn, status: str | None = "open", limit: int = 50) -> list[dict]
 
 
 def list_rules(conn) -> list[dict]:
-    return conn.execute("SELECT id, name, description, definition, action, enabled, created_by, created_at FROM fraud_rule ORDER BY id").fetchall()
+    return rowmac.flag("fraud_rule", conn.execute(
+        "SELECT id, name, description, definition, action, enabled, created_by, created_at, mac FROM fraud_rule ORDER BY id").fetchall())
 
 
 def list_suggestions(conn, status: str | None = "pending") -> list[dict]:

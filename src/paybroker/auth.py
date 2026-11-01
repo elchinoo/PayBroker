@@ -12,7 +12,7 @@ from apgkit.auth import Principal
 from apgkit.ids import sha256
 from psycopg.types.json import Jsonb
 
-from . import audit, core
+from . import audit, core, rowmac
 from .db import system_conn
 
 local = core.local
@@ -49,6 +49,7 @@ def create_merchant_key(conn, merchant_id: str, kind: str, name: str = "", actor
     raw = (SECRET_PREFIX if kind == "secret" else PUBLISHABLE_PREFIX) + secrets.token_urlsafe(32)
     row = conn.execute("INSERT INTO merchant_key (merchant_id, kind, name, prefix, key_hash) VALUES (%s,%s,%s,%s,%s) "
                        "RETURNING id", (merchant_id, kind, name[:60], raw[:12], sha256(raw))).fetchone()
+    rowmac.seal(conn, "merchant_key", "id=%s", (row["id"],))
     _audit(conn, actor, "merchant.key_create", {"merchant_id": merchant_id, "key_id": row["id"], "kind": kind, "name": name[:60],
                                                 "prefix": raw[:12]})
     audit.record(conn, actor, "merchant.key_create", merchant_id,
@@ -85,24 +86,29 @@ def merchant_principal(conn, raw: str) -> Principal | None:
 
 
 def _merchant_lookup(conn, raw: str) -> Principal | None:
-    row = conn.execute(
-        "UPDATE merchant_key k SET last_used_at = now() FROM merchant m WHERE k.key_hash=%s AND k.revoked_at IS NULL "
-        "AND m.id = k.merchant_id AND m.status='active' RETURNING k.id, k.kind, k.merchant_id", (sha256(raw),)).fetchone()
-    conn.commit()
-    if not row:
+    row = conn.execute("SELECT * FROM merchant_key WHERE key_hash=%s", (sha256(raw),)).fetchone()
+    mer = conn.execute("SELECT * FROM merchant WHERE id=%s", (row["merchant_id"],)).fetchone() if row else None
+    # a key or merchant row without a valid MAC is as good as absent (a planted key never authenticates)
+    if (not row or row["revoked_at"] is not None or not mer or mer["status"] != "active"
+            or not rowmac.verify_row("merchant_key", row) or not rowmac.verify_row("merchant", mer)):
+        conn.rollback()
         return None
+    conn.execute("UPDATE merchant_key SET last_used_at = now() WHERE id=%s", (row["id"],))
+    conn.commit()
     return Principal("merchant", row["merchant_id"], MERCHANT_PERMISSIONS[row["kind"]], scopes=frozenset({row["kind"]}),
                      name=row["merchant_id"], ident=row["id"], extra={"merchant_id": row["merchant_id"]})
 
 
 def list_merchant_keys(conn, merchant_id: str) -> list[dict]:
-    return conn.execute("SELECT id, kind, name, prefix, created_at, last_used_at, revoked_at FROM merchant_key "
+    """The merchant's keys; `verified` says whether the broker would accept the row (a planted one shows as False)."""
+    rows = conn.execute("SELECT id, merchant_id, kind, key_hash, name, prefix, created_at, last_used_at, revoked_at, mac FROM merchant_key "
                         "WHERE merchant_id=%s ORDER BY id DESC", (merchant_id,)).fetchall()
+    return [{k: v for k, v in r.items() if k not in ("key_hash", "merchant_id")} for r in rowmac.flag("merchant_key", rows)]
 
 
 def revoke_merchant_key(conn, merchant_id: str, key_id: int, actor: str | None = None) -> bool:
-    row = conn.execute("UPDATE merchant_key SET revoked_at = now() WHERE id=%s AND merchant_id=%s AND revoked_at IS NULL "
-                       "RETURNING id, kind, name, prefix", (key_id, merchant_id)).fetchone()
+    n = rowmac.update(conn, "merchant_key", "revoked_at = now()", (), "id=%s AND merchant_id=%s AND revoked_at IS NULL", (key_id, merchant_id))
+    row = conn.execute("SELECT id, kind, name, prefix FROM merchant_key WHERE id=%s", (key_id,)).fetchone() if n else None
     if row:
         _audit(conn, actor, "merchant.key_revoke", {"merchant_id": merchant_id, "key_id": key_id, "kind": row["kind"], "name": row["name"],
                                                     "prefix": row["prefix"]})

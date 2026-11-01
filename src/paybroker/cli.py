@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the API + MCP server")
     rk = sub.add_parser("rotate-vault-key", help="replace the vault data key and re-encrypt every stored secret (asks for the admin password)")
     rk.add_argument("--yes", action="store_true", help="required: other replicas must be restarted afterwards")
+    sub.add_parser("adopt-rowmacs", help="sign existing rows that have no row MAC (trusts the database as it is now; asks for the admin password)")
     sub.add_parser("reset-admin", help="forget the admin password and delete stored secrets (recovery)")
     sub.add_parser("start", help="container entrypoint: migrate, then serve")
     args = p.parse_args(argv)
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         print("admin password, vault and stored secrets were cleared; the setup code flow is active again")
     elif args.cmd == "rotate-vault-key":
         return _rotate_vault_key(args)
+    elif args.cmd == "adopt-rowmacs":
+        return _adopt_rowmacs()
     elif args.cmd == "reset-data":
         return _reset_data(args)
     elif args.cmd == "serve":
@@ -59,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 def _rotate_vault_key(args) -> int:
     import getpass
 
-    from . import audit, vault
+    from . import audit, rowmac, vault
     from .core import local
     from .db import connect
 
@@ -76,9 +79,8 @@ def _rotate_vault_key(args) -> int:
         elif not vault.try_unlock_with_platform_secret(conn):
             print("the vault is locked and there is no platform secret to open it", file=sys.stderr)
             return 1
-        conn.rollback()
         try:
-            counts = vault.rotate_data_key(conn, password=password if has_password else None)
+            counts = rowmac.rotate_data_key(conn, password=password if has_password else None)      # re-signs every row MAC under the new key
         except (vault.VaultError, vault.VaultLocked) as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -90,6 +92,36 @@ def _rotate_vault_key(args) -> int:
     for name, n in counts.items():
         print(f"{name}: {n} re-encrypted")
     print("done: restart every other process of this app now (they still hold the old key in memory)")
+    return 0
+
+
+def _adopt_rowmacs() -> int:
+    """Sign every security-relevant row that has no MAC (a database from before row MACs). It TRUSTS THE DATABASE AS IT IS AT THIS MOMENT:
+    run it once, after migrating, on a database you believe untampered. Asks for the admin password like rotate-vault-key."""
+    import getpass
+
+    from . import audit, rowmac, vault
+    from .core import local
+    from .db import connect
+
+    with connect() as conn:
+        has_password = local.admin_configured(conn)
+        if has_password and not vault.is_unlocked():
+            password = getpass.getpass("Admin password: ")
+            if not local.login_password(conn, password or ""):     # also unlocks the vault
+                print("wrong admin password", file=sys.stderr)
+                return 1
+        elif not vault.is_unlocked() and not vault.try_unlock_with_platform_secret(conn):
+            print("the vault is locked and there is no platform secret to open it", file=sys.stderr)
+            return 1
+        counts = rowmac.adopt(conn)
+        who = f"cli:{getpass.getuser()}"
+        audit.record(conn, who, "rowmacs.adopt", "", {"signed": counts})
+        conn.execute("INSERT INTO admin_audit (actor, action, detail) VALUES (%s,%s,%s)",
+                     (who, "rowmacs.adopt", psycopg.types.json.Jsonb({"signed": counts})))
+        conn.commit()
+    print("signed rows without a MAC: " + ", ".join(f"{t} {n}" for t, n in counts.items()) +
+          ". This trusted the database as it was now; rows written by anything else from here on are ignored.")
     return 0
 
 

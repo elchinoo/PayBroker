@@ -32,6 +32,7 @@ from . import (
     ml,
     payments,
     routing,
+    rowmac,
     rules,
     vault,
     worker,
@@ -698,7 +699,7 @@ def rotate_vault_key(body: RotateBody, request: Request, p: Principal = Depends(
             if not vault.is_unlocked():
                 raise HTTPException(409, "the vault is locked: unlock it first")
             try:
-                counts = vault.rotate_data_key(conn, password=body.password)
+                counts = rowmac.rotate_data_key(conn, password=body.password)
             except vault.VaultLocked as exc:
                 raise HTTPException(409, str(exc)) from exc
             except vault.VaultError as exc:

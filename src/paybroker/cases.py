@@ -1,5 +1,5 @@
 """Analyst actions: resolve flagged cases (blocking what they decide to block) and record chargebacks."""
-from . import audit, features, rules, training_data
+from . import audit, features, rowmac, rules, training_data
 
 DECISIONS = ("PERMANENT_BLOCK", "ALLOW_WITH_KYC", "DISMISS_ALERT")
 
@@ -13,6 +13,8 @@ def _block(conn, kind: str, value: str | None, reason: str, source: str) -> bool
         return False
     row = conn.execute("INSERT INTO blacklist (kind, value, reason, source) VALUES (%s,%s,%s,%s) ON CONFLICT (kind, value) DO NOTHING "
                        "RETURNING id", (kind, value[:200], reason[:200], source)).fetchone()
+    if row:
+        rowmac.seal(conn, "blacklist", "id=%s", (row["id"],))
     return row is not None
 
 
