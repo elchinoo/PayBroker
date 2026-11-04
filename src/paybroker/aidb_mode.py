@@ -145,14 +145,16 @@ def _seal_kb(conn, vault) -> None:
     fields = _kb_fields(conn)
     if fields is None:
         return
-    conn.execute(aidb.SEAL_SQL)
+    if not aidb.seal_table_exists(conn):             # operator side only: an existing table is never touched
+        conn.execute(aidb.SEAL_SQL)
     conn.execute("INSERT INTO apgkit_aidb_seal (kind, name, mac) VALUES ('semantic_kb', %s, %s) "
                  "ON CONFLICT (kind, name) DO UPDATE SET mac = EXCLUDED.mac, sealed_at = now()",
                  (SEMANTIC_KB, vault.row_mac(aidb.SEAL_TABLE, *fields)))
 
 
 def _kb_drift(conn) -> list[aidb.Drift]:
-    seal = conn.execute("SELECT mac FROM apgkit_aidb_seal WHERE kind = 'semantic_kb' AND name = %s", (SEMANTIC_KB,)).fetchone()
+    seal = (conn.execute("SELECT mac FROM apgkit_aidb_seal WHERE kind = 'semantic_kb' AND name = %s", (SEMANTIC_KB,)).fetchone()
+            if aidb.seal_table_exists(conn) else None)
     fields = _kb_fields(conn)
     if seal is None:
         return [aidb.Drift("semantic_kb", SEMANTIC_KB, "missing" if fields is None else "unsealed")] if fields is not None else []
@@ -187,9 +189,19 @@ def report_drifts(drifts: list[aidb.Drift]) -> None:
             pass
 
 
+def _mine(kind: str, name: str) -> bool:
+    """PayBroker's namespace in a shared AIDB database: our `pb_` objects and the search tools AIDB registers for our semantic knowledge base."""
+    return name.startswith(("pb_", f"semkb_{SEMANTIC_KB}_"))
+
+
+# What the operator setup creates and seals under fixed names: one that exists but carries no seal is reported `unsealed` (kit `expect`).
+EXPECTED = [(kind, n) for kind, names in OBJECTS.items() for n in names] + [("model", MODEL), ("credential", CREDENTIAL)]
+
+
 def verify(conn) -> list[aidb.Drift]:
-    """Every sealed AIDB definition against the catalog (strict: an agent, purpose or SQL tool nobody sealed counts too). Needs the vault open."""
-    drifts = aidb.verify(conn, core.vault, strict=True) + _kb_drift(conn)
+    """Every sealed AIDB definition of ours against the catalog (strict: an agent, purpose or SQL tool of ours nobody sealed counts too; another
+    app's objects in the same database are not judged). Read-only: no DDL, SELECT on the seal table is enough. Needs the vault open."""
+    drifts = aidb.verify(conn, core.vault, strict=True, only=_mine, expect=EXPECTED) + _kb_drift(conn)
     conn.commit()
     return drifts
 
@@ -250,7 +262,7 @@ def inspect(conn) -> dict:
             out |= {"state": "tampered", "reason": "an AIDB definition does not match its seal",
                     "tampered": [{"kind": d.kind, "name": d.name, "problem": d.problem} for d in drifts]}
             return out
-        sealed = conn.execute("SELECT count(*) AS n FROM apgkit_aidb_seal").fetchone()["n"] if _has_seal_table(conn) else 0
+        sealed = conn.execute("SELECT count(*) AS n FROM apgkit_aidb_seal").fetchone()["n"] if aidb.seal_table_exists(conn) else 0
         if not sealed:
             out |= {"state": "error", "reason": "no AIDB definition is sealed (run paybroker aidb-setup)"}
             return out
@@ -262,10 +274,6 @@ def inspect(conn) -> dict:
             pass
         out |= {"state": "error", "reason": f"{type(exc).__name__}: {str(exc).splitlines()[0][:160] if str(exc) else ''}"}
     return out
-
-
-def _has_seal_table(conn) -> bool:
-    return bool(conn.execute("SELECT to_regclass('public.apgkit_aidb_seal') IS NOT NULL AS ok").fetchone()["ok"])
 
 
 # ---- cached answer for the hot paths -----------------------------------------------------------------------------------------
