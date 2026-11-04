@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import (
     __version__,
+    aidb_mode,
     audit,
     auth,
     cards,
@@ -251,7 +252,8 @@ def readyz():
     try:
         with connect(retries=1) as conn:
             conn.execute("SELECT 1")
-        return {"status": "ready", "masking": masking.status()}      # report only: drift never makes the app unready
+        # report only: drift never makes the app unready, and neither does an AIDB mode that is off, not set up or tampered with
+        return {"status": "ready", "masking": masking.status(), "aidb": aidb_mode.readyz(connect)}
     except Exception:  # noqa: BLE001 - never echo connection details
         return JSONResponse({"status": "waking-database"}, status_code=503)
 

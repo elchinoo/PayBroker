@@ -1,5 +1,5 @@
 """Analyst actions: resolve flagged cases (blocking what they decide to block) and record chargebacks."""
-from . import audit, features, rowmac, rules, training_data
+from . import aidb_features, audit, features, rowmac, rules, training_data
 
 DECISIONS = ("PERMANENT_BLOCK", "ALLOW_WITH_KYC", "DISMISS_ALERT")
 
@@ -45,6 +45,7 @@ def resolve(conn, case_id: int, decision: str, note: str | None, actor: str) -> 
         training_data.set_label(conn, case["payment_id"], label, "case")
     conn.execute("UPDATE fraud_case SET status='resolved', analyst_decision=%s, note=%s, resolved_by=%s, resolved_at=now() WHERE id=%s",
                  (decision, (note or "")[:1000] or None, actor[:60], case_id))
+    aidb_features.touch(conn, case_id=case_id)     # no-op unless an AIDB feature that reads case narratives is switched on
     audit.record(conn, actor, "case.resolve", str(case_id),
                  {"case_id": case_id, "payment_id": case["payment_id"], "merchant_id": case["merchant_id"], "decision": decision,
                   "blocked": blocked})

@@ -839,17 +839,20 @@ small fake DOM (they need node and the sibling `agentpg-kit` checkout for the sh
 
 ### 13.2 AIDB
 
-PayBroker does **not** use AIDB (`aidb.*` pipelines, knowledge bases, agents or the AIDB MCP endpoint) today. The plan, from `ecosystem/docs/03-aidb-integration.md` (section 5.3), is below. It is a plan; nothing in this
-repository implements it yet, and the same document says a short spike on a throwaway instance must come first.
+Since this release PayBroker has an opt-in AIDB mode (README, "AIDB mode"); with every switch at its default none of it runs. It implements section 5.3 of
+`ecosystem/docs/03-aidb-integration.md` in part:
 
-| Today | Planned with AIDB |
+| Plan (5.3) | State |
 |---|---|
-| Tier 3 triage: the app calls a model with derived features and nearest cases found by a `vector(17)` distance | An agent whose purpose is limited to **derived feature views** (no card hashes, no personal columns, no write on cases), with tools for case lookup and rule proposals written to the suggestions table only. "The AI never decides" would become a grant boundary in Postgres |
-| Daily rule suggestions | A scheduled agent run writing to the suggestions table; approval stays human |
-| Analyst questions about the data | A semantic knowledge base over payments, cases and merchants for text-to-SQL, with a read-only role |
-| Case narrative similarity | A pipeline embedding case summaries for text retrieval beside the numeric nearest neighbour |
+| Tier 3 triage as an agent whose purpose is limited to derived feature views, with tools for case lookup and nearest cases | **Built** (`PAYBROKER_TRIAGE_METHOD=aidb_agent`). Verdict advisory, every call in the audit ledger, fallback to the unchanged path. The plan's "rule proposals written to a suggestions table" tool is **not** built. |
+| Daily rule suggestions as a scheduled agent run | Not built (the existing worker job and the human approval are unchanged). |
+| Analyst questions: semantic knowledge base over payments, cases and merchants for text-to-SQL, read-only | **Built** (`PAYBROKER_ANALYST_QA=aidb`, `POST /api/ask`), over three views in a schema of their own, under a purpose that can read only them. |
+| Case narrative similarity: a pipeline embedding case summaries beside the numeric nearest neighbour | **Built** (`PAYBROKER_RETRIEVAL_BACKEND=aidb`, `GET /api/cases/{id}/similar`). |
 
-Unchanged by the plan: Tier 1 rules, the Tier 2 model (classical ML scoring is not an AIDB feature), routing, the feature store, the outbox, identity, the LLM gateway's budgets.
+The code: `aidb_objects.py` (the views and the narrative table, created by a hook after the migrations), `aidb_mode.py` (switches, definitions, setup,
+seals, state), `aidb_features.py` (narratives, retrieval, the agent call, questions), `triage._aidb_triage`, and the commands `paybroker aidb-setup` and
+`aidb-status`. Tests: `tests/test_aidb_modes_db.py` (plain Postgres, in CI) and `tests/test_aidb.py` (marker `aidb`, needs `AIDB_TEST_URL`; `make test-aidb`).
+Unchanged: Tier 1 rules, the Tier 2 model, routing, the feature store, the outbox, identity, the LLM gateway's budgets.
 
 ## 14. Command-line reference
 
@@ -858,6 +861,8 @@ Unchanged by the plan: Tier 1 rules, the Tier 2 model (classical ML scoring is n
 | Command | Does |
 |---|---|
 | `migrate` | Apply pending SQL migrations (and create the `vector` extension and the kit's shared tables); prints what was applied |
+| `aidb-setup` | Operator step for AIDB mode (asks for the admin connection string and the admin password; idempotent; `--model`, `--no-validate`, `--reseal`) |
+| `aidb-status` | AIDB mode: what is requested, set up and sealed; exit 1 when something is wrong (`--json`) |
 | `serve` | Run the API, MCP and worker (per `PAYBROKER_ROLE`) with uvicorn on `HOST`:`PORT` |
 | `start` | Container entrypoint: migrate (with a readable error if it fails), then serve |
 | `demo [-n N] [--seed S]` | Create or reuse the merchant "Demo Shop" and send N simulated payments (default 200, seed 7); prints the secret key once, only when the merchant is created |
@@ -905,7 +910,7 @@ Everything here was found while checking this guide against the code. The code-v
 - **Simulated everything.** Connectors, the geo lookup (a small table over documentation IP ranges; pass `telemetry.ip_country` in real use), the 3-D Secure page and the fraud model's training data are simulations or synthetic. One currency per payment; no settlement, payouts, disputes workflow or reconciliation.
 - **Dataset adapters** (TabFormer, Sparkov, PaySim) have tests on tiny fixtures but, per the ecosystem state document, were never run on the real files; the real-data fitting step is not built.
 - **AI quality is not measured.** The ecosystem documents state that triage quality against real models has not been evaluated; the bundled model's metrics describe the synthetic generator only.
-- **AIDB is not integrated** (section 13.2).
+- **AIDB mode is verified in Docker only** (section 13.2): not with a real chat model, not on an AgentPG-hosted instance.
 
 **Not verified by this guide**
 

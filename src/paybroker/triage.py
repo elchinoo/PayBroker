@@ -10,7 +10,7 @@ import re
 
 from psycopg.types.json import Jsonb
 
-from . import accounts, metrics, triage_limits, vault
+from . import accounts, aidb_features, aidb_mode, audit, metrics, triage_limits, vault
 from .chat import chat
 from .llm_http import LLMError
 
@@ -131,6 +131,10 @@ def run(conn, transaction_id: str, job_age: float = 0.0) -> str:
     fa = conn.execute("SELECT * FROM fraud_assessment WHERE transaction_id=%s", (transaction_id,)).fetchone()
     if not tx or not fa:
         return "heuristic"
+    if aidb_mode.triage_method() == "aidb_agent":
+        done = _aidb_triage(conn, tx, fa)
+        if done:
+            return done                     # otherwise the unchanged path below answers (the fallback was recorded in the ledger)
     account = accounts.triage_account(conn)
     source, result, extra = "heuristic", None, {}
     if account is not None:
@@ -175,9 +179,48 @@ def run(conn, transaction_id: str, job_age: float = 0.0) -> str:
         result = heuristic(payload)
     result = {**result, "source": source, **extra}
     conn.execute("UPDATE fraud_assessment SET tier3_state='done', tier3_llm_analysis=%s WHERE id=%s", (Jsonb(result), fa["id"]))
+    aidb_features.touch(conn, assessment_id=fa["id"])        # no-op unless an AIDB feature that reads case narratives is switched on
     conn.commit()
     metrics.TRIAGE.labels(source, "ok").inc()
     return source
+
+
+def _aidb_triage(conn, tx: dict, fa: dict) -> str | None:
+    """Tier 3 by an AIDB agent whose purpose can read only the derived feature view (pb_ai.case_features). The verdict is validated by `parse`
+    like any model output and is advice only, stored exactly where the LLM's would be; every attempt, successful or not, is one entry in the
+    audit ledger (written in the same transaction as the stored verdict). Returns "aidb", or None to let the unchanged path answer."""
+    case = conn.execute("SELECT id FROM fraud_case WHERE transaction_id=%s", (tx["id"],)).fetchone()
+    base = {"agent": aidb_mode.TRIAGE_AGENT, "purpose": aidb_mode.TRIAGE_PURPOSE, "assessment": str(fa["id"]),
+            "case_id": case["id"] if case else None}
+    conn.commit()                                            # one cheap catalog check, then one agent call, with nothing of ours open
+    ok, reason = aidb_mode.usable("triage", conn)
+    call, result = None, None
+    if ok:
+        call = aidb_features.call_agent(conn, aidb_mode.TRIAGE_AGENT, aidb_features.triage_prompt(fa["id"]))
+        if call.text is None:
+            reason = call.error or "no answer"
+        else:
+            try:
+                result = parse(call.text)
+            except TriageError as exc:
+                reason = f"unusable verdict: {exc}"
+    if result is None:
+        audit.record(conn, audit.SYSTEM, "triage.aidb", tx["payment_id"], {**base, "outcome": "fallback", "reason": reason[:200],
+                                                                              "ms": call.ms if call else 0})
+        conn.commit()
+        aidb_mode.calls.labels("triage", "fallback").inc()
+        metrics.TRIAGE.labels("aidb_agent", "fallback").inc()
+        return None
+    verdict = {**result, "source": "aidb_agent", "agent": aidb_mode.TRIAGE_AGENT, "conversation_id": call.conversation_id}
+    conn.execute("UPDATE fraud_assessment SET tier3_state='done', tier3_llm_analysis=%s WHERE id=%s", (Jsonb(verdict), fa["id"]))
+    aidb_features.touch(conn, assessment_id=fa["id"])
+    audit.record(conn, audit.SYSTEM, "triage.aidb", tx["payment_id"],
+                 {**base, "outcome": "ok", "conversation_id": call.conversation_id, "ms": call.ms, "risk_category": result["risk_category"],
+                  "recommended_action": result["recommended_action"], "confidence": result["confidence_score"]})
+    conn.commit()
+    aidb_mode.calls.labels("triage", "ok").inc()
+    metrics.TRIAGE.labels("aidb_agent", "ok").inc()
+    return "aidb"
 
 
 def give_up(conn, transaction_id: str, error: str) -> None:

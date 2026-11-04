@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import (
     accounts,
+    aidb_features,
+    aidb_mode,
     audit,
     auth,
     cases,
@@ -47,6 +49,11 @@ class TriageLimitsBody(_B):
 class ResolveBody(_B):
     decision: str = Field(max_length=30)
     note: str | None = Field(None, max_length=1000)
+
+
+class AskBody(_B):
+    question: str = Field(min_length=3, max_length=500)
+    conversation_id: str | None = Field(None, max_length=64, pattern="^[0-9a-fA-F-]{8,64}$")
 
 
 class ChargebackBody(_B):
@@ -186,6 +193,36 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
             rows = insights.list_cases(conn, None if status == "all" else status)
             conn.rollback()
         return {"items": rows}
+
+    @r.get("/cases/{case_id}/similar", dependencies=[read])
+    def similar_cases(case_id: int, k: int = Query(5, ge=1, le=20), q: str | None = Query(None, min_length=3, max_length=500)):
+        """Past cases like this one: by feature distance (pgvector) and by narrative (text retrieval; the backend is
+        PAYBROKER_RETRIEVAL_BACKEND, `app` full-text search by default, `aidb` a knowledge base). `q` searches the narratives for that text instead."""
+        with connect() as conn:
+            out = aidb_features.similar(conn, case_id, k, q)
+            conn.rollback()
+        if out is None:
+            raise HTTPException(404, "no such case")
+        return out
+
+    @r.post("/ask")
+    def ask(body: AskBody, p=read):
+        """An analyst's question about payments, cases and merchants, answered by an AIDB agent over three read-only views (text to SQL).
+        Off unless PAYBROKER_ANALYST_QA=aidb and `paybroker aidb-setup` has run. The answer is generated text: check the SQL it shows."""
+        with connect() as conn:
+            try:
+                return aidb_features.ask(conn, body.question, _who(p), body.conversation_id)
+            except aidb_features.AskRefused as exc:
+                conn.rollback()
+                raise HTTPException(exc.status, exc.message) from exc
+
+    @r.get("/admin/aidb", dependencies=[settings])
+    def aidb_state():
+        """The AIDB mode report: what is requested, whether AIDB is there and set up, which definitions fail their seals."""
+        with connect() as conn:
+            out = aidb_mode.state(conn, fresh=True) | {"requested": aidb_mode.requested()}
+            conn.rollback()
+        return out
 
     @r.post("/cases/{case_id}/resolve")
     def resolve_case(case_id: int, body: ResolveBody, p=review):

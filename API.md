@@ -152,6 +152,9 @@ Browser sessions send a custom `X-PayBroker-CSRF` header on writes; bearer-token
 | `POST /api/payments/{id}/chargeback` `{amount?, reason, reason_code?}` | `cases:review` | updates the feature store; a fraud `reason_code` (10.1 to 10.5, 4837, 4840, 4863, 4870, 4871) labels the payment's training row as fraud |
 | `GET /api/cases?status=open\|resolved\|all` | `payments:read` | with the AI summary and recommendation |
 | `POST /api/cases/{id}/resolve` `{decision, note}` | `cases:review` | `PERMANENT_BLOCK`, `ALLOW_WITH_KYC`, `DISMISS_ALERT` |
+| `GET /api/cases/{id}/similar?k=5&q=` | `payments:read` | past cases like this one, twice: `numeric` (feature distance, pgvector) and `narrative` (text retrieval over the case narratives; `backend` says `app` or `aidb`, `fallback` appears when AIDB failed at query time). `q` searches the narratives for that text. See README, "AIDB mode" |
+| `POST /api/ask` `{question, conversation_id?}` | `payments:read` | an analyst's question answered by an AIDB agent (semantic schema search, then read-only SQL over `pb_ask.payments`, `pb_ask.cases`, `pb_ask.merchants`). 503 unless `PAYBROKER_ANALYST_QA=aidb` and `paybroker aidb-setup` has run and the seals hold; 429 while two questions are running. Generated text: check the SQL it shows |
+| `GET /api/admin/aidb` | `settings:manage` | AIDB mode state: requested switches, AIDB availability, ready features, definitions that fail their seal |
 | `GET /api/rules`, `POST /api/rules`, `PATCH /api/rules/{id}` `{enabled}`, `DELETE /api/rules/{id}` | read / `rules:manage` | the definition is validated; the fields and operators are returned by the GET |
 | `GET /api/suggestions`, `POST /api/suggestions/run`, `POST /api/suggestions/{id}/decide` `{approve}` | read / `rules:manage` | nothing activates until approved |
 | `GET/POST/DELETE /api/blacklist` | read / `cases:review` | kinds: `ip`, `device`, `card_fingerprint`, `bin`, `email_domain` |

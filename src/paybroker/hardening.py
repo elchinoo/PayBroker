@@ -96,6 +96,10 @@ READABLE = ("fraud_assessment", "fraud_rule", "rule_suggestion", "psp_connector"
             "triage_llm_call", "schema_migrations",
             "audit_ledger", "audit_ledger_head")    # masked at write time; a read-only auditor can read and verify the chain
 
+# Tables that exist only on an install that ran `paybroker aidb-setup` (the kit's seal of the AIDB definitions: HMACs, nothing readable).
+# They are neither masked nor readable by the read-only role (the setup revokes it), so they are not in READABLE; they are known.
+OPTIONAL = ("apgkit_aidb_seal",)
+
 # Row-level security (migration 008): tables whose rows belong to one merchant, and tables no merchant may ever read. Both are
 # FORCEd, so the owner (the app's own role) is bound too. Everything else is shared by design (docs/GUIDE.md section 18).
 RLS_MERCHANT = ("merchant", "merchant_key", "card", "transaction", "webhook_event", "three_ds_challenge", "fraud_assessment")
@@ -121,7 +125,7 @@ def _denied_results(res: dict, tables: tuple[str, ...]) -> dict[str, dict]:
 
 def unclassified(conn: psycopg.Connection) -> list[str]:
     """Public tables that are neither masked, hidden nor listed as readable: a new migration must decide for each one."""
-    known = set(MASKED) | set(HIDDEN) | set(READABLE)
+    known = set(MASKED) | set(HIDDEN) | set(READABLE) | set(OPTIONAL)
     rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1").fetchall()
     return [r["tablename"] for r in rows if r["tablename"] not in known]
 

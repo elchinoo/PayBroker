@@ -479,6 +479,8 @@ PayBroker in the ecosystem must list `exposes: [paybroker.read, paybroker.metric
 | `PAYBROKER_POOL_MAX` | Size of the connection pool used by the payment path (default 20). |
 | `PAYBROKER_SIM_LATENCY` | `off` makes the simulated connectors answer instantly (tests and benchmarks). |
 | `PAYBROKER_OIDC_*`, `PAYBROKER_LOCAL_LOGIN` | Single sign-on, see above. |
+| `PAYBROKER_TRIAGE_METHOD`, `PAYBROKER_RETRIEVAL_BACKEND`, `PAYBROKER_ANALYST_QA` | AIDB mode switches (`app`/`aidb_agent`, `app`/`aidb`, `off`/`aidb`; defaults unchanged), see [AIDB mode](#aidb-mode). |
+| `PAYBROKER_AIDB_ADMIN_DSN` | Admin connection string for `paybroker aidb-setup`, for that one command only (it prompts when unset); never put it in a compose or env file. |
 
 ## Deploy on AgentPG
 
@@ -537,6 +539,86 @@ wraps and admin password hash, which the kit protects itself, the card fingerpri
 LLM breaker state `triage_429_streak` and `triage_paused_until`, whose forgery can only push triage to the deterministic heuristic). The
 `audit_ledger` hash-chains by itself and is left alone. Someone who can run code inside the app, or who holds the data key, can sign.
 
+## AIDB mode
+
+Opt-in. With nothing set, PayBroker behaves exactly as described above and none of this code runs. With EDB AI Accelerator (AIDB) in the
+database, three things can move into Postgres, each behind its own switch and each falling back to the unchanged behaviour when AIDB is
+missing, not set up, or fails its seals:
+
+| Switch | Values | What it changes |
+|---|---|---|
+| `PAYBROKER_TRIAGE_METHOD` | `app` (default), `aidb_agent` | Who writes the Tier 3 triage advice: the LLM account or heuristic (`app`), or an AIDB agent whose purpose can read **only** the view `pb_ai.case_features`. |
+| `PAYBROKER_RETRIEVAL_BACKEND` | `app` (default), `aidb` | Text retrieval of similar cases by narrative: PostgreSQL full-text search (`app`) or a knowledge base that an AIDB pipeline keeps live (`aidb`). The numeric nearest neighbours (pgvector, `vector(17)`) are unchanged and come beside it. |
+| `PAYBROKER_ANALYST_QA` | `off` (default), `aidb` | `POST /api/ask`: an AIDB agent answers an analyst's question with semantic schema search and read-only SQL over `pb_ask.payments`, `pb_ask.cases`, `pb_ask.merchants`. |
+
+Tier 1 rules, the Tier 2 model, routing, the feature store and the outbox are not touched. The agent's verdict is advisory exactly like the
+LLM's: it is validated by the same parser (category and action from fixed lists), stored in `fraud_assessment.tier3_llm_analysis` with
+`source: aidb_agent`, and blocks nothing; blocking is an analyst's click. **Every attempt, successful or not, is one entry in the hash-chained
+audit ledger** (`triage.aidb`, written in the same transaction as the stored verdict; `analyst.ask` for questions, with a hash and the length of
+the question, never its text). The ledger stays authoritative.
+
+**What the agent can see.** The views hold derived numbers, codes and countries only: no card token or fingerprint, customer id, device id, IP
+address, idempotency key, request body, webhook URL or secret, and no analyst free text. The `features` column is built from an allow-list of
+names, so a feature added later stays out until someone lists it (`src/paybroker/aidb_objects.py`). The purpose role (`aidb_p_pb_triage`) is a
+NOLOGIN role with `SELECT` on that one view and nothing else: no grant on `transaction`, `card`, `fraud_case` or any table, and no write
+anywhere. The views obey row-level security like everything else (a session that is not the operator's sees no row). Tests prove it on a real AIDB:
+an agent holding the purpose is told to read customer ids, card tokens and case notes, the database refuses, the model is shown `permission
+denied`, and each refusal is a `purpose_decision` span with `decision_status = 'denied'` in `aidb_otel.traces`.
+
+**Two privilege levels.** The app's own database role stays unprivileged (no superuser, no `CREATEROLE`); it only calls `aidb.agent_converse`,
+retrieves, and verifies. Everything that needs more is the operator's, once:
+
+```bash
+# the connection string of a role that can create roles and register models (not stored, not logged); the vault password is asked too
+PAYBROKER_AIDB_ADMIN_DSN=postgresql://... paybroker aidb-setup        # or without the variable: it prompts, nothing is echoed
+paybroker aidb-status                                                  # what is requested, set up, sealed; exit 1 when something is wrong
+```
+
+`aidb-setup` is idempotent (a repeat changes nothing; tested by comparing the catalog, the grants and the seals before and after). It registers
+the gateway chat model (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, a host-limited credential; or `--model NAME` for a model you registered),
+the live narrative pipeline (local `bge-small-en-v1.5-f16` embeddings, no key), a semantic knowledge base over the schema `pb_ask` only, two
+SQL tools (`pb_get_case`, `pb_nearest_cases`), two purposes with their roles, two agents (`pb_triage_agent`, `pb_ask_agent`), turns on telemetry,
+grants the runtime role exactly what it needs, backfills the case narratives, and **seals** every definition. Run `paybroker migrate` first (it
+creates the views). `/readyz` carries an `aidb` object (`{"enabled": false}` while every switch is off; otherwise the state and which features
+are ready) and never fails the app because of AIDB; `GET /api/admin/aidb` (admin) has the detail.
+
+**Seals.** The definitions that decide what data is read and which model receives it (the model and its credential's host restriction, the
+pipeline, the semantic knowledge base, the SQL tools, the purposes **and their roles' relation grants**, the agents) carry a MAC under the vault
+data key, like the [row MACs](#row-macs). A definition changed by a database write is reported as `payment_broker_tampered_rows_total{table="aidb_agent"}`
+(and `aidb_purpose`, `aidb_sql_tool`, ...), a log line and one `row_mac_invalid` ledger entry, and **the AIDB paths are refused** (triage and
+retrieval fall back to `app`, questions answer 503) until the operator inspects it and runs `paybroker aidb-setup --reseal`. An agent, purpose or tool
+that nobody sealed (planted) is reported too, and so is a deleted one.
+
+**Run it.** `PAYBROKER_TRIAGE_METHOD=aidb_agent PAYBROKER_RETRIEVAL_BACKEND=aidb PAYBROKER_ANALYST_QA=aidb paybroker serve` after the setup;
+`GET /api/cases/{id}/similar?k=5` returns the numeric and the narrative neighbours (and which backend answered); `POST /api/ask {"question": "..."}`
+returns the answer. Narratives are written (a short derived text per case, `pb_ai.case_narrative`) only while a switch that reads them is on, and
+by `aidb-setup`.
+
+**What was verified, and what was not.** Verified against AIDB 7.9.0 in Docker (`aidb-postgres:17`, built from the ecosystem repository), with an
+unprivileged runtime role that owns the app's tables: setup and its idempotence, the purposes' exact grants, agent triage with tool calls, the
+denied-access traces, the live pipeline (a new or changed narrative is embedded without app code) and both retrieval backends, semantic search
+plus read-only SQL under the analyst purpose (including the refusal of base tables), seal tampering of an agent, a planted agent, a deleted tool and a
+forged seal row, the fallbacks, and `aidb-status`. **Not verified:** a real chat model. The tests use a scripted OpenAI-compatible server that
+returns the tool-call JSON AIDB expects, so how well a real model (through the gateway) follows AIDB's simulated tool calling, and the quality
+of its triage and of its SQL, is unknown; the same holds for gateway budgets and failover. Nothing was run on an AgentPG-hosted instance (its
+login role did not hold the AIDB grants when this was written). The tests that need AIDB (`pytest -m aidb`) skip unless `AIDB_TEST_URL` is set, which is
+why CI, which has plain Postgres only, runs the fallbacks and the switches but not the live paths.
+
+**Honest limits.**
+- Purposes confine **relations**. The analyst agent's `run_sql_query` can still call functions that `PUBLIC` may execute, run an expensive
+  `SELECT` over the three views (a statement timeout bounds each call, nothing bounds the rows) and send what it reads to the model behind the
+  gateway: payment-level rows without identifiers, but payment-level all the same. Two questions run at a time per process.
+- The seals detect, they do not prevent: a database superuser or the owner of the `aidb` objects can change things, and the check runs every 30
+  seconds per process, not on every call. They cover definitions and relation grants, not role memberships, function grants, the credential-usage
+  grants, the `aidb.otel_client` setting, or AIDB's own code; an older authentic definition copied back from a backup verifies.
+- The agent path does not go through the AI triage limits (per-minute bucket, daily cap, breaker, `Settings > AI triage limits`): the gateway's
+  own budgets are the protection, and one agent call holds a worker for up to 90 seconds. The existing path still applies when the agent falls back.
+- The runtime role cannot read `aidb_otel.traces` (that needs `aidb_governance`), so denials are visible to the operator, not in `aidb-status`. The
+  telemetry tables grow until AIDB's retention is enabled. The `db.query.text` of a span holds the SQL the model wrote.
+- The `app` narrative backend is keyword search only (no embedder); the `aidb` one is vector search. Their rankings differ and neither has been
+  evaluated against analysts' judgement.
+- Not built from the ecosystem plan: a scheduled agent that proposes rules into the suggestions table, semantic aliases, and agent memory (a preview feature).
+
 ## Limits worth knowing
 
 - The connectors are simulations; the 3-D Secure page lets the tester choose the outcome.
@@ -554,6 +636,7 @@ LLM breaker state `triage_429_streak` and `triage_paused_until`, whose forgery c
 make lint
 make test                                     # no database needed: rules, model, routing, signing, validation
 make test-db                                  # the whole broker against Postgres (needs POSTGRES_PASSWORD exported)
+make test-aidb                                # the AIDB tests against a throwaway aidb-postgres:17 container (see AIDB mode)
 make train                                    # retrain on 1,000,000 synthetic rows (uv pip install -e ".[train]"); see *Model, training and data*
 make bench
 ```
