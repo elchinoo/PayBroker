@@ -596,6 +596,32 @@ data key, like the [row MACs](#row-macs). A definition changed by a database wri
 retrieval fall back to `app`, questions answer 503) until the operator inspects it and runs `paybroker aidb-setup --reseal`. An agent, purpose or tool
 that nobody sealed (planted) is reported too, and so is a deleted one.
 
+**Analyst questions report what ran.** The model sometimes writes a SELECT and answers with that text without calling `run_sql_query` (seen with
+`gpt-4.1-mini` through the gateway). `/api/ask` therefore never trusts the model's account of its own query: the `sql`, `rows`, `row_count` and
+`sql_error` fields are read back from AIDB's `aidb_internal.action_log` (what was really executed in that conversation, as CityPulse does).
+When the model answered but no query ran, the call is retried **once** in the same conversation with an instruction to run the query; if still
+nothing ran, the response is HTTP 200 with `executed: false`, `answer: null`, `sql_error` saying so, and the model's text only as
+`unverified_text`. `retried` says whether the retry happened; the ledger's `analyst.ask` entry has `outcome` `ok`, `sql_error`, `no_query` or
+`error`, plus `steps`, `rows`, `retried` and `denied_calls`.
+
+**The built-in `sleep` tool.** AIDB 7.9 injects a `sleep` tool into **every** agent whatever its `tools` list says (native-tools reference), there is
+no API to remove it from an agent, and `aidb.delete_tool('sleep')` is refused ("built-in native tool"), so no kit change can remove it (checked in
+Docker, and `tests/test_aidb.py::test_aidb_offers_sleep_to_every_agent_and_it_cannot_be_removed` fails if a later AIDB changes that). The agents'
+purposes do not allow it, so each call is a refused call (a `denied` decision). What PayBroker does: both agents' instructions forbid it; the runs
+are bounded (`max_iterations` 5 for triage, 6 for questions; AIDB also stops after three identical failed calls, "gave up after the tool call
+'sleep' failed identically 3 times in a row"); a stopped run is an error, so triage falls back to the unchanged path; and the `triage.aidb` and
+`analyst.ask` ledger entries carry `denied_calls`, so a model that keeps trying is visible. Measured on AIDB 7.9.0: with `max_iterations=5` a run of
+varying `sleep` calls made 8 model calls before AIDB reported "Iterations budget exceeded", so the limit is a bound, not an exact count.
+
+**Governance.** The runtime role has **no** access to `aidb_otel.traces` (a trace holds the SQL text the model wrote, the principal and session
+ids); `aidb-setup` revokes a direct grant if one exists. It reads decisions through `public.pb_governance_decisions_v`, a `security_barrier` view
+owned by the operator that exposes only time, status, decision id, agent, purpose role, where the decision was taken, denial reason and class, for
+this app's two agents or its two purpose roles. `GET /api/admin/aidb[?window=24 hours]` returns it under `governance` (counts by agent and status, and the
+latest refused calls). The view's definition, owner and options are **sealed** like the other AIDB definitions: widening it (an added column
+that shows SQL text), replacing, dropping or planting it unsealed is reported (`payment_broker_tampered_rows_total{table="aidb_pb_view"}`) and
+the AIDB paths are refused until the operator re-runs `aidb-setup` (which recreates it from code and seals it). Tested on a real AIDB with a
+runtime role that cannot create in `public`.
+
 **Run it.** `PAYBROKER_TRIAGE_METHOD=aidb_agent PAYBROKER_RETRIEVAL_BACKEND=aidb PAYBROKER_ANALYST_QA=aidb paybroker serve` after the setup;
 `GET /api/cases/{id}/similar?k=5` returns the numeric and the narrative neighbours (and which backend answered); `POST /api/ask {"question": "..."}`
 returns the answer. Narratives are written (a short derived text per case, `pb_ai.case_narrative`) only while a switch that reads them is on, and
@@ -604,8 +630,9 @@ by `aidb-setup`.
 **What was verified, and what was not.** Verified against AIDB 7.9.0 in Docker (`aidb-postgres:17`, built from the ecosystem repository), with an
 unprivileged runtime role that owns the app's tables: setup and its idempotence, the purposes' exact grants, agent triage with tool calls, the
 denied-access traces, the live pipeline (a new or changed narrative is embedded without app code) and both retrieval backends, semantic search
-plus read-only SQL under the analyst purpose (including the refusal of base tables), seal tampering of an agent, a planted agent, a deleted tool and a
-forged seal row, the fallbacks, and `aidb-status`. **Not verified:** a real chat model. The tests use a scripted OpenAI-compatible server that
+plus read-only SQL under the analyst purpose (including the refusal of base tables), the SQL and rows reported from the action log, the retry and the
+`executed: false` answer, runs of a model that keeps calling `sleep` ending and falling back, the governance view and the revoked trace access, seal tampering of an agent, a planted agent, a deleted tool and a
+forged seal row, the fallbacks, and `aidb-status`. **Not verified:** a real chat model in these tests (a real-model run through the Docker dev stack, gpt-4.1-mini via the gateway, is what found the three defects fixed above; it was not repeated after the fixes). The tests use a scripted OpenAI-compatible server that
 returns the tool-call JSON AIDB expects, so how well a real model (through the gateway) follows AIDB's simulated tool calling, and the quality
 of its triage and of its SQL, is unknown; the same holds for gateway budgets and failover. Nothing was run on an AgentPG-hosted instance (its
 login role did not hold the AIDB grants when this was written). The tests that need AIDB (`pytest -m aidb`) skip unless `AIDB_TEST_URL` is set, which is
@@ -620,8 +647,10 @@ why CI, which has plain Postgres only, runs the fallbacks and the switches but n
   grants, the `aidb.otel_client` setting, or AIDB's own code; an older authentic definition copied back from a backup verifies.
 - The agent path does not go through the AI triage limits (per-minute bucket, daily cap, breaker, `Settings > AI triage limits`): the gateway's
   own budgets are the protection, and one agent call holds a worker for up to 90 seconds. The existing path still applies when the agent falls back.
-- The runtime role cannot read `aidb_otel.traces` (that needs `aidb_governance`), so denials are visible to the operator, not in `aidb-status`. The
-  telemetry tables grow until AIDB's retention is enabled. The `db.query.text` of a span holds the SQL the model wrote.
+- The runtime role cannot read `aidb_otel.traces`; it sees refused calls through the narrow governance view (no SQL text). The telemetry tables grow
+  until AIDB's retention is enabled; the `db.query.text` of a span holds the SQL the model wrote, so keep that table to the operator. The view is
+  owned by the operator but lives in `public`, whose owner (the database owner) can drop it: that is detected (sealed), not prevented.
+- The built-in `sleep` tool cannot be taken away from an agent (see above): its refused calls still appear in the governance trail.
 - The `app` narrative backend is keyword search only (no embedder); the `aidb` one is vector search. Their rankings differ and neither has been
   evaluated against analysts' judgement.
 - Not built from the ecosystem plan: a scheduled agent that proposes rules into the suggestions table, semantic aliases, and agent memory (a preview feature).

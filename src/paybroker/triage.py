@@ -195,8 +195,14 @@ def _aidb_triage(conn, tx: dict, fa: dict) -> str | None:
     conn.commit()                                            # one cheap catalog check, then one agent call, with nothing of ours open
     ok, reason = aidb_mode.usable("triage", conn)
     call, result = None, None
+    denied = 0
     if ok:
+        since = conn.execute("SELECT clock_timestamp() - interval '2 seconds' AS t").fetchone()["t"]
         call = aidb_features.call_agent(conn, aidb_mode.TRIAGE_AGENT, aidb_features.triage_prompt(fa["id"]))
+        # Tool calls the database or AIDB refused during this run (for example the built-in `sleep`, which AIDB offers to every agent and which
+        # this agent's purpose does not allow). AIDB ends a run that keeps failing (identical failures, or max_iterations); that is an error
+        # here, and the unchanged path answers. The count goes to the ledger so a model that keeps trying is visible.
+        denied = aidb_features.denied_calls(aidb_features.executed(conn, call.conversation_id, since))
         if call.text is None:
             reason = call.error or "no answer"
         else:
@@ -206,7 +212,7 @@ def _aidb_triage(conn, tx: dict, fa: dict) -> str | None:
                 reason = f"unusable verdict: {exc}"
     if result is None:
         audit.record(conn, audit.SYSTEM, "triage.aidb", tx["payment_id"], {**base, "outcome": "fallback", "reason": reason[:200],
-                                                                              "ms": call.ms if call else 0})
+                                                                              "ms": call.ms if call else 0, "denied_calls": denied})
         conn.commit()
         aidb_mode.calls.labels("triage", "fallback").inc()
         metrics.TRIAGE.labels("aidb_agent", "fallback").inc()
@@ -216,7 +222,7 @@ def _aidb_triage(conn, tx: dict, fa: dict) -> str | None:
     aidb_features.touch(conn, assessment_id=fa["id"])
     audit.record(conn, audit.SYSTEM, "triage.aidb", tx["payment_id"],
                  {**base, "outcome": "ok", "conversation_id": call.conversation_id, "ms": call.ms, "risk_category": result["risk_category"],
-                  "recommended_action": result["recommended_action"], "confidence": result["confidence_score"]})
+                  "recommended_action": result["recommended_action"], "confidence": result["confidence_score"], "denied_calls": denied})
     conn.commit()
     aidb_mode.calls.labels("triage", "ok").inc()
     metrics.TRIAGE.labels("aidb_agent", "ok").inc()

@@ -452,6 +452,121 @@ def test_analyst_questions_are_answered_from_the_three_views_and_nothing_else(re
             "public.transaction", "public.fraud_case", "public.app_setting"}
 
 
+def ask_sql(sql: str) -> str:
+    return tool_call("run_sql_query", query=sql)
+
+
+def test_ask_reports_the_sql_and_rows_that_really_ran_not_what_the_model_says(ready, fake, monkeypatch):
+    from paybroker import aidb_features, aidb_mode
+    monkeypatch.setenv("PAYBROKER_ANALYST_QA", "aidb")
+    aidb_mode.reset_cache()
+    with runtime() as c:
+        make_case(c, 22, features=TAKEOVER, vector=V_TAKEOVER)
+        n = c.execute("SELECT count(*) AS n FROM transaction").fetchone()["n"]
+        fake.script = [tool_call("semantic_kb_search", kb_name="pb_ask_kb", query_text="payments by status", top_k=4),
+                       ask_sql("SELECT status, count(*) AS payments FROM pb_ask.payments GROUP BY status ORDER BY status"),
+                       "There are 999 payments. SQL: SELECT 999 AS payments"]       # what the model SAYS it ran is not what ran
+        out = aidb_features.ask(c, "How many payments are there per status?", "analyst@example.test")
+        assert out["executed"] is True and out["retried"] is False and out["sql_error"] == ""
+        assert "GROUP BY status" in out["sql"] and "999" not in out["sql"]
+        assert out["rows"] == [{"status": "DECLINED", "payments": n}] and out["row_count"] == 1 and not out["truncated"]
+        assert [s["tool"] for s in out["steps"]] == ["semantic_kb_search", "run_sql_query"] and all(s["ok"] for s in out["steps"])
+        assert "999" in out["answer"]                      # the text is the model's; the table next to it is the database's
+
+
+def test_a_model_that_writes_sql_instead_of_running_it_is_retried_once_then_reported(ready, fake, monkeypatch):
+    """Seen with a real model (gpt-4.1-mini): it wrote a SELECT and returned that text as its answer without calling run_sql_query. The old code
+    passed the text through. Now: one retry that tells it to run the query; if it still does not, `executed: false`, no answer."""
+    from paybroker import aidb_features, aidb_mode, audit
+    monkeypatch.setenv("PAYBROKER_ANALYST_QA", "aidb")
+    aidb_mode.reset_cache()
+    sql = "SELECT count(*) AS payments FROM pb_ask.payments"
+    with runtime() as c:
+        make_case(c, 23, features=TAKEOVER, vector=V_TAKEOVER)
+        n = c.execute("SELECT count(*) AS n FROM transaction").fetchone()["n"]
+        # 1. the retry succeeds: the second call runs the query with the tool
+        fake.log.clear()
+        fake.script = [f"Here is the query: {sql};", ask_sql(sql), f"There are {n} payments."]
+        out = aidb_features.ask(c, "How many payments are there?", "analyst@example.test")
+        assert out["retried"] is True and out["executed"] is True and out["answer"] == f"There are {n} payments."
+        assert out["sql"] == sql and out["rows"] == [{"payments": n}]
+        prompts = [json.dumps(b) for p, _a, b in fake.log if p.endswith("/chat/completions")]
+        assert len(prompts) == 3 and "without running a query" in prompts[1] and "How many payments are there?" in prompts[1]   # same conversation, nudged once
+        e = next(e for e in audit.recent(c, 10) if e["action"] == "analyst.ask")
+        assert e["payload"]["outcome"] == "ok" and e["payload"]["retried"] is True and e["payload"]["rows"] == 1
+        # 2. it never runs it: nothing is presented as an answer
+        fake.script = ["SELECT count(*) FROM pb_ask.payments;", f"The query is {sql};"]
+        out = aidb_features.ask(c, "How many payments are there?", "analyst@example.test")
+        assert out["executed"] is False and out["retried"] is True and out["answer"] is None and out["sql"] is None and out["rows"] == []
+        assert "did not run a query" in out["sql_error"] and sql in out["unverified_text"]
+        e = next(e for e in audit.recent(c, 10) if e["action"] == "analyst.ask")
+        assert e["payload"]["outcome"] == "no_query"
+        # 3. a query that was refused is reported as a failed query, with its error and no rows
+        fake.script = [ask_sql("SELECT customer_id FROM public.transaction"), "I could not read that."]
+        out = aidb_features.ask(c, "List the customers.", "analyst@example.test")
+        assert out["executed"] is True and out["rows"] == [] and "permission denied" in out["sql_error"] and out["retried"] is False
+        e = next(e for e in audit.recent(c, 10) if e["action"] == "analyst.ask")
+        assert e["payload"]["outcome"] == "sql_error" and e["payload"]["denied_calls"] == 1
+
+
+def test_aidb_offers_sleep_to_every_agent_and_it_cannot_be_removed(ready, admin, fake):
+    """Finding (AIDB 7.9.0, docs: native tools): `sleep` is injected into every agent regardless of its tool list. There is no API to remove it
+    from an agent, and the native tool cannot be deleted. What the app can do is say so in the instructions and bound the run."""
+    from paybroker import aidb_mode
+    with runtime() as c:
+        fake.log.clear()
+        fake.script = ["done"]
+        aidb.converse(c, aidb_mode.ASK_AGENT, "hello")
+    seen = seen_by_the_model(fake)
+    assert "- sleep:" in seen and "pb_get_case" not in seen         # offered although the agent's tools do not list it
+    with pytest.raises(psycopg.Error, match="cannot be deleted"):
+        admin.execute("SELECT aidb.delete_tool('sleep')")
+    admin.rollback()
+    agents = {a["name"]: a for a in admin.execute("SELECT name, instructions, max_iterations FROM aidb.agents WHERE name LIKE 'pb\\_%%'").fetchall()}
+    admin.rollback()
+    assert "sleep" not in (admin.execute("SELECT tools FROM aidb.agents WHERE name = 'pb_triage_agent'").fetchone()["tools"] or [])
+    admin.rollback()
+    assert agents["pb_triage_agent"]["max_iterations"] == aidb_mode.TRIAGE_MAX_ITERATIONS <= 6
+    assert agents["pb_ask_agent"]["max_iterations"] == aidb_mode.ASK_MAX_ITERATIONS <= 8
+    for a in agents.values():
+        assert "Never call the sleep tool" in a["instructions"]
+
+
+def sleep_call(seconds: int) -> str:
+    return tool_call("sleep", seconds=seconds)
+
+
+def test_a_triage_run_that_keeps_calling_sleep_ends_and_falls_back(ready, fake, monkeypatch):
+    """A model that keeps calling the built-in sleep tool (refused by the purpose each time, 32 denied decisions in one real run) is stopped by AIDB
+    (identical failures, or the iteration limit), the app falls back, and the ledger says how many calls were refused."""
+    from paybroker import audit, triage
+    monkeypatch.setenv("PAYBROKER_TRIAGE_METHOD", "aidb_agent")
+    with runtime() as c:
+        a = make_case(c, 61, features=TAKEOVER, vector=V_TAKEOVER)
+        # identical failures: AIDB gives up after three
+        fake.log.clear()
+        fake.script = [sleep_call(5)] * 20
+        assert triage.run(c, a["tx"]) == "heuristic"
+        e = next(e for e in audit.recent(c, 10) if e["action"] == "triage.aidb")
+        assert e["payload"]["outcome"] == "fallback" and e["payload"]["denied_calls"] == 3 and "failed identically" in e["payload"]["reason"]
+        assert len([1 for p, _a, _b in fake.log if p.endswith("/chat/completions")]) <= 4
+        # varying arguments: the iteration limit ends it
+        b = make_case(c, 62, features=TAKEOVER, vector=V_TAKEOVER)
+        fake.log.clear()
+        fake.script = [sleep_call(i + 1) for i in range(30)]
+        assert triage.run(c, b["tx"]) == "heuristic"
+        e = next(e for e in audit.recent(c, 10) if e["action"] == "triage.aidb")
+        assert e["payload"]["outcome"] == "fallback" and "udget" in e["payload"]["reason"] and e["payload"]["denied_calls"] >= 3
+        assert len([1 for p, _a, _b in fake.log if p.endswith("/chat/completions")]) <= 12, "the run must be bounded"
+        # a model that tries sleep once and then does its job still gets its verdict accepted; the refused call is counted
+        d = make_case(c, 63, features=TAKEOVER, vector=V_TAKEOVER)
+        fake.script = [sleep_call(2), tool_call("pb_get_case", assessment_id=d["assessment"]), tool_call("pb_nearest_cases", assessment_id=d["assessment"]), GOOD_VERDICT]
+        assert triage.run(c, d["tx"]) == "aidb"
+        e = next(e for e in audit.recent(c, 10) if e["action"] == "triage.aidb")
+        assert e["payload"]["outcome"] == "ok" and e["payload"]["denied_calls"] == 1
+        assert audit.verify(c)["intact"]
+
+
 def test_questions_are_refused_when_the_switch_is_off_or_the_agent_is_unusable(ready, monkeypatch):
     from paybroker import aidb_features, aidb_mode
     with runtime() as c:

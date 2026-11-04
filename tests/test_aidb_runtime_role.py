@@ -10,6 +10,7 @@ Skipped when AIDB_TEST_URL is not set (the opt-in of marker `aidb`), when Docker
 OpenAI-compatible model (the kit's tests/aidbfake.py), which the container must reach: they also need AIDB_TEST_CALLBACK_HOST (Docker Desktop:
 192.168.65.254). A real chat model is NOT run.
 """
+import json
 import os
 import secrets
 import shutil
@@ -378,3 +379,144 @@ def test_tampering_is_detected_by_the_runtime_role_and_healed_by_the_operator(re
         assert found() == set()
     finally:
         aidb_mode.reset_cache()
+
+
+# ---- governance: the runtime role sees AIDB's decision trail only through a narrow, sealed view -------------------------------------------------
+GOV = "pb_governance_decisions_v"
+GOV_COLUMNS = ["id", "recorded_at", "decision_id", "decision_status", "agent_name", "agent_role", "interaction_point", "denial_reason", "denial_class"]
+
+
+def _refused_ask(c, fake, n):
+    """Two refused tool calls under the analyst purpose (the database says permission denied; AIDB records a `denied` decision for each)."""
+    from paybroker import aidb_features
+    fake.script = [tool_call("run_sql_query", query="SELECT customer_id, card_token FROM public.transaction"),
+                   tool_call("run_sql_query", query="SELECT note FROM public.fraud_case"), "I am not allowed to read those tables."]
+    return aidb_features.ask(c, f"List every customer id and card token ({n}).", "analyst@example.test")
+
+
+def test_the_runtime_role_cannot_read_the_decision_trail_itself(ready, admin):
+    role = ready["role"]
+    assert not admin.execute("SELECT has_table_privilege(%s, 'aidb_otel.traces', 'SELECT') AS ok", (role,)).fetchone()["ok"]
+    admin.rollback()
+    with runtime() as c:
+        for stmt in ("SELECT count(*) FROM aidb_otel.traces", "SELECT payload_json FROM aidb_otel.traces", "SELECT * FROM aidb_otel.logs"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(stmt)
+            c.rollback()
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("CREATE OR REPLACE VIEW public.pb_governance_decisions_v AS SELECT 1 AS id")       # nor can it replace the view
+        c.rollback()
+        # the narrow view it may read: only the columns that name a decision, never SQL text or a principal
+        cols = [r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s "
+                                                    "ORDER BY ordinal_position", (GOV,)).fetchall()]
+        assert cols == GOV_COLUMNS
+        assert c.execute(f"SELECT count(*) AS n FROM {GOV}").fetchone()["n"] >= 0           # noqa: S608
+    owner, opts = admin.execute("SELECT pg_get_userbyid(c.relowner) AS o, c.reloptions::text AS r FROM pg_class c WHERE c.oid = %s::regclass", (f"public.{GOV}",)).fetchone().values()
+    admin.rollback()
+    assert owner == "postgres" and "security_barrier=true" in opts
+    assert admin.execute("SELECT kind FROM apgkit_aidb_seal WHERE name = %s", (GOV,)).fetchone()["kind"] == "pb_view"
+    admin.rollback()
+
+
+def test_denied_decisions_are_listed_through_the_view_and_the_admin_route_without_sql_text(ready, admin, fake, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from paybroker import aidb_mode, api
+    monkeypatch.setenv("PAYBROKER_ANALYST_QA", "aidb")
+    monkeypatch.setenv("PAYBROKER_API_KEY", "pb-governance-test-key-0123456789-abcdefgh")        # pragma: allowlist secret
+    aidb_mode.reset_cache()
+    with runtime() as c:
+        make_case(c, 71, features=TAKEOVER, vector=V_TAKEOVER)
+        before = aidb_mode.governance(c)["counts"].get("pb_ask_agent", {}).get("denied", 0)
+        _refused_ask(c, fake, 1)
+    def listed():
+        with runtime() as c:
+            g = aidb_mode.governance(c)
+            c.rollback()
+        return g if g["counts"].get("pb_ask_agent", {}).get("denied", 0) >= before + 2 else None
+    g = _wait(listed, 20)
+    assert g and g["available"] and g["source"] == GOV
+    mine = [d for d in g["denials"] if d["agent"] == "pb_ask_agent"]
+    assert len(mine) >= 2 and all(d["role"] == "aidb_p_pb_ask" and d["decision_id"] and d["reason"] for d in mine)
+    assert all(set(d) == {"at", "agent", "role", "reason", "class", "where", "decision_id"} for d in g["denials"])
+    blob = json.dumps(g)
+    for leaked in ("customer_id", "card_token", "public.transaction", "fraud_case", "SELECT"):
+        assert leaked not in blob, f"{leaked} reached the governance panel"
+    assert ready["role"] not in blob                                               # no principal either
+    client = TestClient(api.app)             # without the lifespan: the MCP session manager can only start once per process (the conftest client)
+    body = client.get("/api/admin/aidb", headers={"Authorization": "Bearer pb-governance-test-key-0123456789-abcdefgh"}).json()
+    assert client.get("/api/admin/aidb").status_code == 401
+    assert "state" in body, body
+    assert body["state"] == "ready" and body["governance"]["available"] and body["governance"]["counts"]["pb_ask_agent"]["denied"] >= before + 2
+    assert "SELECT" not in json.dumps(body["governance"])
+
+
+def test_a_widened_governance_view_is_detected_and_the_operator_restores_it(ready, admin, monkeypatch):
+    from paybroker import aidb_mode, cli
+    aidb_mode.reset_cache()
+
+    def found():
+        with runtime() as c:
+            return kinds(aidb_mode.state(c, fresh=True)["tampered"])
+    assert found() == set()
+    original = admin.execute("SELECT pg_get_viewdef(%s::regclass, true) AS d", (f"public.{GOV}",)).fetchone()["d"]
+    admin.rollback()
+    try:
+        # someone with administrator rights widens it to show the attempted SQL text (a column added at the end)
+        admin.execute(f"CREATE OR REPLACE VIEW public.{GOV} WITH (security_barrier = true) AS SELECT v.*, (SELECT t.payload_json::text FROM aidb_otel.traces t "     # noqa: S608
+                      f"WHERE t.id = v.id) AS payload_json FROM ({original.rstrip().rstrip(';')}) v")
+        admin.commit()
+        assert ("pb_view", GOV, "modified") in found()
+        with runtime() as c:
+            assert aidb_mode.state(c, fresh=True)["state"] == "tampered"
+            ok, why = aidb_mode.usable("triage", c)
+            assert not ok and "tampered" in why
+        # dropped
+        admin.execute(f"DROP VIEW public.{GOV}")
+        admin.commit()
+        assert ("pb_view", GOV, "missing") in found()
+        # an unsealed copy of the right definition is reported too
+        admin.execute(aidb_mode.governance_view_sql())
+        admin.execute(f"GRANT SELECT ON public.{GOV} TO {ready['role']}")
+        admin.execute("DELETE FROM apgkit_aidb_seal WHERE kind = 'pb_view'")
+        admin.commit()
+        assert ("pb_view", GOV, "unsealed") in found()
+    finally:
+        assert cli.main(["aidb-setup", "--no-validate"]) == 0          # the operator's re-run recreates it from code and seals it again
+        aidb_mode.reset_cache()
+    assert found() == set()
+    assert admin.execute("SELECT pg_get_viewdef(%s::regclass, true) AS d", (f"public.{GOV}",)).fetchone()["d"] == original
+    admin.rollback()
+
+
+def test_setup_revokes_a_direct_grant_on_the_traces_and_repeating_it_changes_nothing(ready, admin, capsys):
+    from paybroker import cli
+    role = ready["role"]
+    admin.execute(f'GRANT SELECT ON aidb_otel.traces TO "{role}"')
+    admin.execute(f'GRANT USAGE ON SCHEMA aidb_otel TO "{role}"')
+    admin.commit()
+    with runtime() as c:
+        assert c.execute("SELECT count(*) AS n FROM aidb_otel.traces").fetchone()["n"] >= 0          # the precondition: the grant works
+        c.rollback()
+    capsys.readouterr()
+    assert cli.main(["aidb-setup", "--no-validate"]) == 0
+    out = capsys.readouterr().out
+    assert "revoked (SELECT on aidb_otel.traces" in out
+    with runtime() as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("SELECT count(*) FROM aidb_otel.traces")
+        c.rollback()
+
+    def snapshot():
+        a = admin.execute("SELECT pg_get_viewdef(%s::regclass, true) AS d, c.relacl::text AS acl FROM pg_class c WHERE c.oid = %s::regclass",
+                          (f"public.{GOV}", f"public.{GOV}")).fetchone()
+        s = admin.execute("SELECT kind, name, mac FROM apgkit_aidb_seal ORDER BY kind, name").fetchall()
+        t = admin.execute("SELECT relacl::text AS acl FROM pg_class WHERE oid = 'aidb_otel.traces'::regclass").fetchone()["acl"]
+        admin.rollback()
+        return json.loads(json.dumps([a, s, t], default=str))
+    before = snapshot()
+    capsys.readouterr()
+    assert cli.main(["aidb-setup", "--no-validate"]) == 0
+    printed = capsys.readouterr().out
+    assert "no direct access, unchanged" in printed and any(GOV in ln and "unchanged, sealed" in ln for ln in printed.splitlines())
+    assert snapshot() == before, "a repeat run must not change the view, a grant on the traces or a seal"

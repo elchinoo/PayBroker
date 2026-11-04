@@ -217,10 +217,14 @@ def build_router(require, forget_merchants, public_url) -> APIRouter:
                 raise HTTPException(exc.status, exc.message) from exc
 
     @r.get("/admin/aidb", dependencies=[settings])
-    def aidb_state():
-        """The AIDB mode report: what is requested, whether AIDB is there and set up, which definitions fail their seals."""
+    def aidb_state(window: str = Query("24 hours", pattern=r"^\d{1,3} (minutes|hours|days)$")):
+        """The AIDB mode report: what is requested, whether AIDB is there and set up, which definitions fail their seals, and the governance
+        trail: decisions AIDB recorded for this app's agents (counts, and the refused calls with their reason and decision id), read through the
+        narrow view `pb_governance_decisions_v` (no SQL text, no principal). Present only once AIDB is available."""
         with connect() as conn:
             out = aidb_mode.state(conn, fresh=True) | {"requested": aidb_mode.requested()}
+            if out.get("state") not in ("unavailable",):
+                out["governance"] = aidb_mode.governance(conn, window=window)
             conn.rollback()
         return out
 

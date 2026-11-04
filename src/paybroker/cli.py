@@ -258,6 +258,14 @@ def _aidb_status(args) -> int:
         print(f"  TAMPERED {t['kind']} {t['name']}: {t['problem']}")
     for name, f in s["features"].items():
         print(f"  {name:<10} {'ready' if f['ready'] else 'not ready: ' + f['reason']}")
+    if s["state"] != "unavailable":
+        with connect() as conn:
+            g = aidb_mode.governance(conn)
+            conn.rollback()
+        if g["available"]:
+            print("  governance " + (", ".join(f"{a}: " + "/".join(f"{n} {st}" for st, n in sorted(c.items())) for a, c in sorted(g["counts"].items())) or "no decisions in 24 hours"))
+        else:
+            print(f"  governance not available: {g['reason']}")
     return 1 if problems else 0
 
 

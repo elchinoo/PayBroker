@@ -336,18 +336,27 @@ def test_questions_are_refused_politely_unless_everything_is_in_place(client, op
     assert client.post("/api/ask", json={**q, "conversation_id": "not a uuid!"}, headers=op).status_code == 422
 
 
+def _ran(sql="SELECT count(*) AS n FROM pb_ask.payments WHERE status = 'DECLINED'", rows=({"n": 7},), ok=True, error=""):
+    return [{"tool": "semantic_kb_search", "sql": None, "ok": True, "rows": None, "error": ""},
+            {"tool": "run_sql_query", "sql": sql, "ok": ok, "rows": list(rows) if ok else None, "error": error}]
+
+
 def test_a_question_goes_to_the_agent_and_into_the_ledger(client, op, monkeypatch):
     monkeypatch.setenv("PAYBROKER_ANALYST_QA", "aidb")
     monkeypatch.setattr(aidb_mode, "usable", lambda feature, conn: (True, ""))
     seen = []
     monkeypatch.setattr(aidb_features, "call_agent", lambda conn, name, prompt, cid=None: seen.append((name, prompt, cid)) or aidb_features.AgentCall(
         "There were 7 declines.", "aaaaaaaa-0000-0000-0000-000000000001", "", 9))
+    monkeypatch.setattr(aidb_features, "executed", lambda conn, cid, since: _ran())
     r = client.post("/api/ask", json={"question": "How many payments were declined?", "conversation_id": "aaaaaaaa-0000-0000-0000-000000000000"}, headers=op)
-    assert r.status_code == 200 and r.json()["answer"] == "There were 7 declines." and r.json()["agent"] == "pb_ask_agent"
+    body = r.json()
+    assert r.status_code == 200 and body["answer"] == "There were 7 declines." and body["agent"] == "pb_ask_agent"
+    assert body["executed"] is True and body["retried"] is False and body["rows"] == [{"n": 7}] and body["sql_error"] == ""
+    assert "DECLINED" in body["sql"]                       # the SQL is the one in the action log, not text from the model
     assert seen == [("pb_ask_agent", "How many payments were declined?", "aaaaaaaa-0000-0000-0000-000000000000")]
     with connect() as conn:
         e = _ledger(conn, "analyst.ask")[0]
-        assert e["payload"]["outcome"] == "ok" and "declined" not in json.dumps(e["payload"])
+        assert e["payload"]["outcome"] == "ok" and "declined" not in json.dumps(e["payload"]) and e["payload"]["rows"] == 1
     monkeypatch.setattr(aidb_features, "call_agent", lambda *a, **k: aidb_features.AgentCall(None, None, "the model timed out", 3))
     r = client.post("/api/ask", json={"question": "How many payments were declined?"}, headers=op)
     assert r.status_code == 502 and "timed out" in r.json()["detail"]
@@ -355,10 +364,50 @@ def test_a_question_goes_to_the_agent_and_into_the_ledger(client, op, monkeypatc
         assert _ledger(conn, "analyst.ask")[0]["payload"]["outcome"] == "error"
 
 
+def test_model_text_without_a_query_is_not_returned_as_an_answer(client, op, monkeypatch):
+    """The model wrote SQL and presented it as the answer without running it (seen with a real model). One bounded retry tells it to run the query;
+    when nothing ran even then the response says so and carries the text only as `unverified_text`."""
+    monkeypatch.setenv("PAYBROKER_ANALYST_QA", "aidb")
+    monkeypatch.setattr(aidb_mode, "usable", lambda feature, conn: (True, ""))
+    calls = []
+    text = "SELECT count(*) FROM pb_ask.payments WHERE status = 'DECLINED';"
+    monkeypatch.setattr(aidb_features, "call_agent", lambda conn, name, prompt, cid=None: calls.append((prompt, cid)) or aidb_features.AgentCall(
+        text, "aaaaaaaa-0000-0000-0000-000000000002", "", 5))
+    monkeypatch.setattr(aidb_features, "executed", lambda conn, cid, since: [{"tool": "semantic_kb_search", "sql": None, "ok": True, "rows": None, "error": ""}])
+    r = client.post("/api/ask", json={"question": "How many payments were declined?"}, headers=op)
+    body = r.json()
+    assert r.status_code == 200 and body["executed"] is False and body["retried"] is True
+    assert body["answer"] is None and body["sql"] is None and body["rows"] == [] and body["unverified_text"] == text
+    assert "did not run a query" in body["sql_error"]
+    assert len(calls) == 2 and "run_sql_query" in calls[1][0] and calls[1][1] == "aaaaaaaa-0000-0000-0000-000000000002"   # one retry, same conversation
+    with connect() as conn:
+        e = _ledger(conn, "analyst.ask")[0]
+        assert e["payload"]["outcome"] == "no_query" and e["payload"]["retried"] is True
+    # the retry works: the second call runs the query, the response is the normal one and says it was retried
+    state = {"n": 0}
+
+    def agent(conn, name, prompt, cid=None):
+        state["n"] += 1
+        return aidb_features.AgentCall("There were 7 declines." if state["n"] == 2 else text, "aaaaaaaa-0000-0000-0000-000000000003", "", 5)
+    monkeypatch.setattr(aidb_features, "call_agent", agent)
+    monkeypatch.setattr(aidb_features, "executed", lambda conn, cid, since: _ran() if state["n"] >= 2 else [])
+    body = client.post("/api/ask", json={"question": "How many payments were declined?"}, headers=op).json()
+    assert body["executed"] is True and body["retried"] is True and body["answer"] == "There were 7 declines." and body["rows"] == [{"n": 7}]
+    # a query that ran and failed is reported as such, with the error and no rows
+    monkeypatch.setattr(aidb_features, "call_agent", lambda conn, name, prompt, cid=None: aidb_features.AgentCall("I could not read it.", "aaaaaaaa-0000-0000-0000-000000000004", "", 5))
+    monkeypatch.setattr(aidb_features, "executed", lambda conn, cid, since: _ran(ok=False, error="Tool error: permission denied for table transaction"))
+    body = client.post("/api/ask", json={"question": "List card tokens."}, headers=op).json()
+    assert body["executed"] is True and body["retried"] is False and "permission denied" in body["sql_error"] and body["rows"] == []
+    with connect() as conn:
+        assert _ledger(conn, "analyst.ask")[0]["payload"]["outcome"] == "sql_error" and _ledger(conn, "analyst.ask")[0]["payload"]["denied_calls"] == 1
+
+
 def test_the_state_route_is_for_administrators(client, op):
     assert client.get("/api/admin/aidb").status_code == 401
     r = client.get("/api/admin/aidb", headers=op)
     assert r.status_code == 200 and r.json()["state"] == "unavailable" and r.json()["requested"]["triage_method"] == "app"
+    assert "governance" not in r.json()               # nothing of AIDB's decision trail exists on plain Postgres
+    assert client.get("/api/admin/aidb?window=1%3B+drop", headers=op).status_code == 422
 
 
 # ---- the operator commands ---------------------------------------------------------------------------------------------------------------------------
