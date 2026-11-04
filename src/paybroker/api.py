@@ -32,6 +32,7 @@ from . import (
     hardening,
     merchants,
     ml,
+    netguard,
     origins,
     payments,
     routing,
@@ -88,9 +89,18 @@ def _warn_dev_http() -> None:
             "PAYBROKER_DEV_HTTP is ON: merchant browser origins may use plain http for [::1] and *.localhost. Local development only, never in production")
 
 
+def _warn_dev_webhook_hosts() -> None:
+    hosts = netguard.dev_webhook_hosts()
+    if hosts:
+        logging.getLogger("paybroker").warning(
+            "PAYBROKER_DEV_WEBHOOK_HOSTS is ON (%s): webhooks to exactly these hosts may use private addresses and plain http. "
+            "Local development only, never in production", ", ".join(hosts))
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     _warn_dev_http()
+    _warn_dev_webhook_hosts()
     _stop.clear()
     _startup()
     role = get_settings().role
@@ -263,7 +273,8 @@ def readyz():
             conn.execute("SELECT 1")
         # report only: drift never makes the app unready, and neither does an AIDB mode that is off, not set up or tampered with
         return {"status": "ready", "masking": masking.status(), "aidb": aidb_mode.readyz(connect),
-                "insecure_transport_relaxed": origins.dev_http()}
+                "insecure_transport_relaxed": origins.dev_http(),
+                "dev_webhook_hosts": list(netguard.dev_webhook_hosts())}
     except Exception:  # noqa: BLE001 - never echo connection details
         return JSONResponse({"status": "waking-database"}, status_code=503)
 

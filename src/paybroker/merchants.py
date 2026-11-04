@@ -6,7 +6,7 @@ from psycopg.types.json import Jsonb
 from . import audit as ledger
 from . import auth, origins, rowmac, vault
 from .ids import new_id
-from .netguard import UnsafeURL, check_url
+from .netguard import UnsafeURL, check_webhook_url
 
 CURRENCIES = {"USD", "EUR", "GBP", "BRL", "CAD", "AUD", "MXN", "INR", "JPY", "CHF", "SEK"}
 DEFAULTS = {"preferred_psps": [], "max_fee_bps": None, "weights": {"auth": 100.0, "cost": 30.0, "latency": 5.0},
@@ -161,7 +161,7 @@ def set_webhook(conn, merchant_id: str, url: str | None, actor: str = "system") 
     if not vault.is_initialized(conn):
         raise MerchantError("set an admin password first: webhook secrets are stored encrypted under it")
     try:
-        url = check_url(url)
+        url = check_webhook_url(url)
     except UnsafeURL as exc:
         raise MerchantError(str(exc)) from exc
     secret = "whsec_" + secrets.token_urlsafe(32)

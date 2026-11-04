@@ -14,7 +14,7 @@ import httpx
 
 from . import rowmac, vault
 from .ids import hmac_hex
-from .netguard import UnsafeURL, resolve_url
+from .netguard import UnsafeURL, resolve_webhook_url
 
 BACKOFF = [30, 300, 1800, 7200, 21600, 54000]    # seconds to wait after failed attempt 1, 2, ... (30 s ... 15 h: about 23.6 h in all)
 ATTEMPTS = len(BACKOFF) + 1                      # the first try plus one per delay
@@ -74,7 +74,7 @@ def deliver(conn, event_id: str) -> tuple[str, str]:
     try:
         # The merchant's URL is untrusted input: resolve it once, check every address, and connect to that address (no second DNS
         # lookup for a rebinding name to answer). Host header and TLS server name stay the merchant's. Redirects are never followed.
-        url, pin_headers, extensions = resolve_url(ev["webhook_url"]).request_args()
+        url, pin_headers, extensions = resolve_webhook_url(ev["webhook_url"]).request_args()
         with _client() as c:
             resp = c.post(url, content=raw, headers={**headers, **pin_headers}, extensions=extensions)
         code = resp.status_code

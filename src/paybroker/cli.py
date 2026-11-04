@@ -74,24 +74,18 @@ def _rotate_vault_key(args) -> int:
     import getpass
 
     from . import audit, rowmac, vault
-    from .core import local
     from .db import connect
 
     if not args.yes:
         print("refusing to rotate without --yes (other replicas must be restarted afterwards)", file=sys.stderr)
         return 2
     with connect() as conn:
-        has_password = local.admin_configured(conn)
-        password = getpass.getpass("Admin password: ") if has_password else None
-        if has_password:
-            if not local.login_password(conn, password or ""):     # also unlocks the vault
-                print("wrong admin password", file=sys.stderr)
-                return 1
-        elif not vault.try_unlock_with_platform_secret(conn):
-            print("the vault is locked and there is no platform secret to open it", file=sys.stderr)
+        typed: list[str] = []                    # the admin password or sealed-boot passphrase, if one was asked: the rotation re-wraps under it
+        if not _unlock_vault(conn, secret_out=typed):
             return 1
+        password = typed[0] if typed else None
         try:
-            counts = rowmac.rotate_data_key(conn, password=password if has_password else None)      # re-signs every row MAC under the new key
+            counts = rowmac.rotate_data_key(conn, password=password)      # re-signs every row MAC under the new key
         except (vault.VaultError, vault.VaultLocked) as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -111,19 +105,11 @@ def _adopt_rowmacs() -> int:
     run it once, after migrating, on a database you believe untampered. Asks for the admin password like rotate-vault-key."""
     import getpass
 
-    from . import audit, rowmac, vault
-    from .core import local
+    from . import audit, rowmac
     from .db import connect
 
     with connect() as conn:
-        has_password = local.admin_configured(conn)
-        if has_password and not vault.is_unlocked():
-            password = getpass.getpass("Admin password: ")
-            if not local.login_password(conn, password or ""):     # also unlocks the vault
-                print("wrong admin password", file=sys.stderr)
-                return 1
-        elif not vault.is_unlocked() and not vault.try_unlock_with_platform_secret(conn):
-            print("the vault is locked and there is no platform secret to open it", file=sys.stderr)
+        if not _unlock_vault(conn):
             return 1
         counts = rowmac.adopt(conn)
         who = f"cli:{getpass.getuser()}"
@@ -136,11 +122,12 @@ def _adopt_rowmacs() -> int:
     return 0
 
 
-def _unlock_vault(conn) -> bool:
+def _unlock_vault(conn, secret_out: list | None = None) -> bool:
     """Open the vault for this command. In order: already open; the admin password (a standalone install that has one; not under sealed boot, where
     the vault is wrapped under the unseal passphrase instead); the platform secret; under sealed boot (or when no admin password exists) the
     unseal passphrase, asked on a terminal with a hidden prompt through the kit's own `unlock_sealed`. The passphrase is never an argument, an
-    environment variable, printed or stored. False says why on stderr."""
+    environment variable, printed or stored. False says why on stderr. `secret_out`, when given, receives the admin password or passphrase that
+    was typed (rotate-vault-key must re-wrap under it); the caller drops it after use."""
     import getpass
 
     from apgkit import sealed as sealing
@@ -155,9 +142,12 @@ def _unlock_vault(conn) -> bool:
         return True
     sealed_boot = sealing.Sealed.from_env().enabled
     if not sealed_boot and local.admin_configured(conn):
-        if not local.login_password(conn, getpass.getpass("Admin password: ") or ""):     # also unlocks the vault
+        password = getpass.getpass("Admin password: ") or ""
+        if not local.login_password(conn, password):     # also unlocks the vault
             print("wrong admin password", file=sys.stderr)
             return False
+        if secret_out is not None:
+            secret_out.append(password)
         return True
     if vault.try_unlock_with_platform_secret(conn):
         return True
@@ -178,6 +168,9 @@ def _unlock_vault(conn) -> bool:
     except VaultLocked:
         print("that passphrase does not open the vault", file=sys.stderr)
         return False
+    else:
+        if secret_out is not None:
+            secret_out.append(typed)
     finally:
         del typed
     return True

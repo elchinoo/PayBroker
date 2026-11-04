@@ -488,6 +488,40 @@ def test_cli_platform_secret_path_is_unchanged_under_sealed_boot(sealed_cli, mon
     assert sealed_cli == []                                     # never asked
 
 
+def test_adopt_rowmacs_opens_a_sealed_boot_vault(sealed_cli, capsys):
+    from paybroker import vault
+    assert cli.main(["adopt-rowmacs"]) == 0
+    out = capsys.readouterr()
+    assert "signed rows" in out.out and "vault is locked" not in out.err and SEALED_PW not in out.out + out.err
+    assert len(sealed_cli) == 1 and "passphrase" in sealed_cli[0].lower() and "Admin password" not in sealed_cli[0]
+    assert vault.is_unlocked()
+
+
+def test_adopt_rowmacs_stops_on_a_wrong_sealed_boot_passphrase(sealed_cli, capsys, monkeypatch):
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "not-the-passphrase-xyz")
+    assert cli.main(["adopt-rowmacs"]) == 1
+    out = capsys.readouterr()
+    assert "does not open the vault" in out.err and "not-the-passphrase-xyz" not in out.out + out.err
+
+
+def test_rotate_vault_key_opens_a_sealed_boot_vault_and_keeps_the_passphrase(sealed_cli, capsys, monkeypatch):
+    from paybroker import vault
+    assert cli.main(["rotate-vault-key", "--yes"]) == 0
+    out = capsys.readouterr()
+    assert "re-encrypted" in out.out and "vault is locked" not in out.err and SEALED_PW not in out.out + out.err
+    assert len(sealed_cli) == 1 and "passphrase" in sealed_cli[0].lower()
+    vault.lock()                                                  # the same passphrase still opens the vault under the new key
+    with connect() as conn:
+        assert cli._unlock_vault(conn) is True
+
+
+def test_rotate_vault_key_stops_on_a_wrong_sealed_boot_passphrase(sealed_cli, capsys, monkeypatch):
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "not-the-passphrase-xyz")
+    assert cli.main(["rotate-vault-key", "--yes"]) == 1
+    out = capsys.readouterr()
+    assert "does not open the vault" in out.err and "not-the-passphrase-xyz" not in out.out + out.err
+
+
 def test_setup_under_sealed_boot_gets_past_the_vault_and_stops_at_aidb(sealed_cli, capsys, monkeypatch):
     import os
     monkeypatch.setenv("PAYBROKER_AIDB_ADMIN_DSN", os.environ["TEST_DATABASE_URL"])

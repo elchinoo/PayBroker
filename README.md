@@ -380,6 +380,17 @@ return origins may also use plain `http` for `[::1]` and names under `.localhost
 only, never in production.** Everything else is unchanged: https origins, every other host, no wildcards, no IP addresses or private ranges. The flag is
 read from the environment only (never from a request header), logged as a WARNING at start-up, and shown as `insecure_transport_relaxed` in `/readyz`.
 
+### Local development webhook receivers (`PAYBROKER_DEV_WEBHOOK_HOSTS`)
+
+A webhook URL that points at a private or loopback address is refused (an SSRF guard). A local stack's shop lives at one, e.g.
+`http://shopfront:8104/...` or `http://shopfront.localhost:8104/...`. With `PAYBROKER_DEV_HTTP=1` **and** `PAYBROKER_DEV_WEBHOOK_HOSTS=shopfront,shopfront.localhost`
+(comma-separated, exact host names or IP literals) a webhook to exactly those hosts may use a private address and plain http. **Local development
+only, never in production.** The setting is ignored unless `PAYBROKER_DEV_HTTP` is on. No wildcards, no CIDR ranges (such entries are ignored), every
+other private address stays blocked, and link-local addresses (`169.254.0.0/16`, `fe80::/10`, cloud metadata) are refused even when listed. Every
+resolved address is still checked and the connection is pinned to the address that was checked. The allowlist trusts the *name*: a listed name that
+later resolves to another private address is accepted. It applies to merchant webhooks only (not to AI provider URLs), is logged as a WARNING at
+start-up and shown as `dev_webhook_hosts` in `/readyz`. Prefer it over `PAYBROKER_ALLOW_PRIVATE_URLS`, which switches the guard off for every private address.
+
 ## AI provider (the shared LLM gateway first)
 
 The AI triage and the rule suggestions need an OpenAI-compatible chat endpoint. In the ecosystem every app gets its model from the
