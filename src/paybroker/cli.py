@@ -137,22 +137,49 @@ def _adopt_rowmacs() -> int:
 
 
 def _unlock_vault(conn) -> bool:
-    """Open the vault for this command like adopt-rowmacs does (the admin password, or the platform secret). False says why on stderr."""
+    """Open the vault for this command. In order: already open; the admin password (a standalone install that has one; not under sealed boot, where
+    the vault is wrapped under the unseal passphrase instead); the platform secret; under sealed boot (or when no admin password exists) the
+    unseal passphrase, asked on a terminal with a hidden prompt through the kit's own `unlock_sealed`. The passphrase is never an argument, an
+    environment variable, printed or stored. False says why on stderr."""
     import getpass
+
+    from apgkit import sealed as sealing
+    from apgkit.sealed import Protected
+    from apgkit.vault import VaultLocked
 
     from . import vault
     from .core import local
+    from .core import vault as core_vault
 
     if vault.is_unlocked():
         return True
-    if local.admin_configured(conn):
+    sealed_boot = sealing.Sealed.from_env().enabled
+    if not sealed_boot and local.admin_configured(conn):
         if not local.login_password(conn, getpass.getpass("Admin password: ") or ""):     # also unlocks the vault
             print("wrong admin password", file=sys.stderr)
             return False
         return True
-    if not vault.try_unlock_with_platform_secret(conn):
-        print("the vault is locked and there is no platform secret to open it", file=sys.stderr)
+    if vault.try_unlock_with_platform_secret(conn):
+        return True
+    if not vault.is_initialized(conn):
+        print("the vault does not exist yet and there is no platform secret to create it under: start the app (sealed boot creates it at the first "
+              "unseal), then run this again", file=sys.stderr)
         return False
+    if not sys.stdin.isatty():
+        print("the vault is locked and there is no platform secret to open it; run this command in a terminal to enter the unseal passphrase",
+              file=sys.stderr)
+        return False
+    typed = getpass.getpass("Unseal passphrase (the sealed-boot passphrase, not shown, not stored): ") or ""
+    if not typed:
+        print("no passphrase given", file=sys.stderr)
+        return False
+    try:
+        core_vault.unlock_sealed(conn, Protected(typed))
+    except VaultLocked:
+        print("that passphrase does not open the vault", file=sys.stderr)
+        return False
+    finally:
+        del typed
     return True
 
 

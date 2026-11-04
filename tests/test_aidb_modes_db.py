@@ -384,6 +384,69 @@ def test_setup_refuses_without_aidb_and_never_prints_the_connection_string(clien
     assert "could not connect" in err and "pw@" not in err
 
 
+# ---- the operator commands open the vault under sealed boot -----------------------------------------------------------------------------
+SEALED_PW = "test-vault-password-0123"      # pragma: allowlist secret      (what the conftest vault was created with: under sealed boot, the unseal passphrase)
+
+
+@pytest.fixture
+def sealed_cli(client, monkeypatch):
+    """A sealed-boot install seen from the operator's CLI: the vault is locked, wrapped under the passphrase, there is no platform secret and an
+    admin password may exist (which does not open a sealed-boot vault)."""
+    from paybroker import vault
+    for v in ("PAYBROKER_ENCRYPTION_KEY", "PAYBROKER_ENCRYPTION_KEY_FILE"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("APGKIT_SEALED", "not-a-real-blob")       # only whether sealed boot is on matters to the CLI
+    vault.lock()
+    asked = []
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": asked.append(prompt) or SEALED_PW)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    yield asked
+    vault.lock()
+
+
+def test_cli_opens_a_sealed_boot_vault_with_the_hidden_passphrase_prompt(sealed_cli, capsys):
+    from paybroker import vault
+    with connect() as conn:
+        assert cli._unlock_vault(conn) is True
+    assert vault.is_unlocked()
+    assert len(sealed_cli) == 1 and "passphrase" in sealed_cli[0].lower() and "Admin password" not in sealed_cli[0]
+    out = capsys.readouterr()
+    assert SEALED_PW not in out.out + out.err
+
+
+def test_cli_refuses_a_wrong_sealed_boot_passphrase_without_echoing_it(sealed_cli, capsys, monkeypatch):
+    from paybroker import vault
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "not-the-passphrase-xyz")
+    with connect() as conn:
+        assert cli._unlock_vault(conn) is False
+    assert not vault.is_unlocked()
+    out = capsys.readouterr()
+    assert "does not open the vault" in out.err and "not-the-passphrase-xyz" not in out.out + out.err
+
+
+def test_cli_does_not_prompt_without_a_terminal_under_sealed_boot(sealed_cli, capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    with connect() as conn:
+        assert cli._unlock_vault(conn) is False
+    assert sealed_cli == [] and "terminal" in capsys.readouterr().err
+
+
+def test_cli_platform_secret_path_is_unchanged_under_sealed_boot(sealed_cli, monkeypatch):
+    from paybroker import vault
+    monkeypatch.setattr(vault, "try_unlock_with_platform_secret", lambda conn: True)
+    with connect() as conn:
+        assert cli._unlock_vault(conn) is True
+    assert sealed_cli == []                                     # never asked
+
+
+def test_setup_under_sealed_boot_gets_past_the_vault_and_stops_at_aidb(sealed_cli, capsys, monkeypatch):
+    import os
+    monkeypatch.setenv("PAYBROKER_AIDB_ADMIN_DSN", os.environ["TEST_DATABASE_URL"])
+    assert cli.main(["aidb-setup", "--model", "dummy"]) == 1
+    err = capsys.readouterr().err
+    assert "AIDB is not available here" in err and "vault is locked" not in err
+
+
 def test_case_resolution_still_works_with_every_switch_off(client, op):
     cs = flagged(client)
     assert client.post(f"/api/cases/{cs[0]['case_id']}/resolve", json={"decision": "DISMISS_ALERT"}, headers=op).status_code == 200

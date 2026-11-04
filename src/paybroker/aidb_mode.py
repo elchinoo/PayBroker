@@ -272,7 +272,10 @@ def inspect(conn) -> dict:
             conn.rollback()
         except Exception:  # noqa: BLE001
             pass
-        out |= {"state": "error", "reason": f"{type(exc).__name__}: {str(exc).splitlines()[0][:160] if str(exc) else ''}"}
+        if isinstance(exc, psycopg.errors.InsufficientPrivilege):
+            out |= {"state": "error", "reason": "this database role cannot read the AIDB catalog yet: run paybroker aidb-setup (it grants what is missing)"}
+        else:
+            out |= {"state": "error", "reason": f"{type(exc).__name__}: {str(exc).splitlines()[0][:160] if str(exc) else ''}"}
     return out
 
 
@@ -350,6 +353,21 @@ def _grant_server(admin, server: str, role: str) -> str:
     if has:
         return "unchanged"
     admin.execute(psycopg.sql.SQL("GRANT USAGE ON FOREIGN SERVER {} TO {}").format(psycopg.sql.Identifier(server), psycopg.sql.Identifier(role)))
+    return "granted"
+
+
+SEMANTIC_REGISTRY = "aidb_internal.semantic_knowledge_bases"
+
+
+def _grant_select(admin, table: str, role: str) -> str:
+    """SELECT on `table` for `role` itself. `has_table_privilege` is not enough to decide: it is also true through a role the runtime role is a
+    member of (a purpose role), which is how this table was reachable by accident, and only after the purposes existed."""
+    has = admin.execute("SELECT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = %s::regclass AND a.privilege_type = 'SELECT' "
+                        "AND a.grantee = (SELECT oid FROM pg_roles WHERE rolname = %s)) AS ok", (table, role)).fetchone()["ok"]
+    if has:
+        return "unchanged"
+    schema, _, name = table.partition(".")
+    admin.execute(psycopg.sql.SQL("GRANT SELECT ON {} TO {}").format(aidb._ident(schema, name), psycopg.sql.Identifier(role)))
     return "granted"
 
 
@@ -440,6 +458,10 @@ def setup(admin, runtime_conn, runtime_role: str, *, vault, model: str = "", val
             note("semantic", f"{left} -> {right}", f"join {done['action'] if done else 'recorded'}")
         except psycopg.Error as exc:
             note("semantic", f"{left} -> {right}", f"join not recorded ({str(exc).splitlines()[0][:80]})")
+    # The runtime role reads the registry of semantic knowledge bases (aidb.list_semantic_kbs(), which runs as the caller) on every health check and
+    # seal check. AIDB grants it to the purpose role of the knowledge base only, so without this the check failed with "permission denied for
+    # table semantic_knowledge_bases" until the purposes (and the membership in them) existed, and whenever that membership was missing.
+    note("grant", SEMANTIC_REGISTRY, "select for the runtime role " + _grant_select(admin, SEMANTIC_REGISTRY, runtime_role))
     _seal_kb(admin, vault)
     # AIDB registers search tools of its own for the knowledge base (semkb_<kb>_*): sealed like ours, so a rewrite of one is reported too
     for r in admin.execute("SELECT name FROM aidb.sql_tool_registry WHERE name LIKE %s ORDER BY name", (f"semkb\\_{SEMANTIC_KB}\\_%",)).fetchall():

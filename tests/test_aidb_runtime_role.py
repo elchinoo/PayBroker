@@ -193,6 +193,45 @@ def test_setup_grants_the_runtime_role_select_and_nothing_more_on_the_seal_table
     assert r["sel"] and not (r["ins"] or r["upd"] or r["del"]), r
 
 
+def test_setup_grants_the_runtime_role_the_semantic_registry_itself(ready, admin):
+    """Not only through a purpose role it is a member of: aidb.list_semantic_kbs() reads this table as the caller on every health and seal check."""
+    row = admin.execute("SELECT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = 'aidb_internal.semantic_knowledge_bases'::regclass "
+                        "AND a.privilege_type = 'SELECT' AND a.grantee = (SELECT oid FROM pg_roles WHERE rolname = %s)) AS direct", (ready["role"],)).fetchone()
+    admin.rollback()
+    assert row["direct"], "the runtime role needs its own SELECT on the semantic knowledge base registry"
+
+
+def test_a_role_without_the_catalog_grants_gets_a_clear_reason_and_setup_repairs_it(ready, admin, monkeypatch):
+    """The state of a fresh stack whose `aidb-setup` has not (fully) run: the registry is unreadable. /readyz must say what to do, and a (re)run of the
+    operator step must make it ready again without any manual GRANT."""
+    from paybroker import aidb_mode, cli
+    monkeypatch.setenv("PAYBROKER_RETRIEVAL_BACKEND", "aidb")
+    role = ready["role"]
+    memberships = [r["rolname"] for r in admin.execute("SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid "
+                                                       "WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = %s) AND r.rolname LIKE 'aidb\\_p\\_pb\\_%%'",
+                                                       (role,)).fetchall()]
+    assert memberships, "setup must have made the runtime role a member of its purpose roles"
+    try:
+        admin.execute(sql.SQL("REVOKE SELECT ON aidb_internal.semantic_knowledge_bases FROM {}").format(sql.Identifier(role)))
+        for m in memberships:
+            admin.execute(sql.SQL("REVOKE {} FROM {}").format(sql.Identifier(m), sql.Identifier(role)))
+        admin.commit()
+        aidb_mode.reset_cache()
+        with runtime() as c:
+            s = aidb_mode.inspect(c)
+        assert s["state"] == "error" and "aidb-setup" in s["reason"] and "permission denied" not in s["reason"], s
+        assert aidb_mode.readyz(runtime)["state"] == "error"
+        aidb_mode.reset_cache()
+        assert cli.main(["aidb-setup", "--no-validate"]) == 0
+        aidb_mode.reset_cache()
+        with runtime() as c:
+            s = aidb_mode.inspect(c)
+        assert s["state"] == "ready" and all(f["ready"] for f in s["features"].values()), s
+    finally:
+        cli.main(["aidb-setup", "--no-validate"])                  # idempotent: leaves the module's database as the other tests expect it
+        aidb_mode.reset_cache()
+
+
 # ---- the runtime paths ----------------------------------------------------------------------------------------------------------------
 def test_verify_and_status_work_without_create_and_report_ready(ready, monkeypatch):
     from paybroker import aidb_mode, cli, core
