@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import sys
 import threading
 import time
@@ -31,6 +32,7 @@ from . import (
     hardening,
     merchants,
     ml,
+    origins,
     payments,
     routing,
     rowmac,
@@ -80,8 +82,15 @@ def _startup() -> None:
         pass
 
 
+def _warn_dev_http() -> None:
+    if origins.dev_http():
+        logging.getLogger("paybroker").warning(
+            "PAYBROKER_DEV_HTTP is ON: merchant browser origins may use plain http for [::1] and *.localhost. Local development only, never in production")
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
+    _warn_dev_http()
     _stop.clear()
     _startup()
     role = get_settings().role
@@ -253,7 +262,8 @@ def readyz():
         with connect(retries=1) as conn:
             conn.execute("SELECT 1")
         # report only: drift never makes the app unready, and neither does an AIDB mode that is off, not set up or tampered with
-        return {"status": "ready", "masking": masking.status(), "aidb": aidb_mode.readyz(connect)}
+        return {"status": "ready", "masking": masking.status(), "aidb": aidb_mode.readyz(connect),
+                "insecure_transport_relaxed": origins.dev_http()}
     except Exception:  # noqa: BLE001 - never echo connection details
         return JSONResponse({"status": "waking-database"}, status_code=503)
 

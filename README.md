@@ -115,7 +115,7 @@ only ever sees a token. Everything here is test mode (see the test cards above).
 **1. Set the merchant up** (Merchants in the web UI, or the operator API):
 
 - *Browser origins*: the shop's exact origin, e.g. `https://shop.example.com` (`http://localhost:3000` is allowed for local
-  development). No wildcards, no paths. Only the publishable-key tokenization call answers browsers on those origins; the
+  development; with `PAYBROKER_DEV_HTTP=1` also `http://[::1]:3000` and `http://shop.localhost:8104`, see below). No wildcards, no paths. Only the publishable-key tokenization call answers browsers on those origins; the
   secret-key endpoints never send CORS headers.
 - *Webhook*: a URL on the shop's server. Save it and keep the signing secret (`whsec_...`); it also signs the 3-D Secure return.
 - A **publishable** key (`pk_test_...`) for the page and a **secret** key (`sk_test_...`) for the server.
@@ -372,6 +372,13 @@ advisory lock stops two resets from overlapping (409 over the API, exit code 1 o
 connector and training-setting caches hold configuration, which is kept), so other running instances need no restart: their caches expire within
 5 to 30 seconds anyway. Payments sent while a reset runs may survive it; pause the senders first. Sequences are not rewound and the
 space is returned to the table by autovacuum.
+
+### Local development over plain http (`PAYBROKER_DEV_HTTP`)
+
+A local stack serves apps at `http://<app>.localhost:<port>`. With the explicit opt-in `PAYBROKER_DEV_HTTP=1`, merchant browser origins and 3-D Secure
+return origins may also use plain `http` for `[::1]` and names under `.localhost` (`localhost` and `127.0.0.1` are always allowed). **Local development
+only, never in production.** Everything else is unchanged: https origins, every other host, no wildcards, no IP addresses or private ranges. The flag is
+read from the environment only (never from a request header), logged as a WARNING at start-up, and shown as `insecure_transport_relaxed` in `/readyz`.
 
 ## AI provider (the shared LLM gateway first)
 

@@ -1,20 +1,34 @@
 """Browser origins a merchant allows (CORS for the publishable key, and where 3-D Secure may send the customer back).
 
-An origin is exactly `scheme://host[:port]`: https, or http only for localhost and 127.0.0.1 (local development). No wildcards,
+An origin is exactly `scheme://host[:port]`: https, or http only for localhost and 127.0.0.1 (local development). With the explicit
+development opt-in PAYBROKER_DEV_HTTP=1 (never for production) http is also accepted for [::1] and for names under `.localhost`, which
+is what a local stack uses (`http://shop.localhost:8104`). The opt-in is read from configuration only, never from a request. No wildcards,
 no paths, no credentials, no query. What is stored is the normalized form, which is also what a browser sends in `Origin`.
 """
 import ipaddress
+import os
 import re
 from urllib.parse import parse_qsl, urlsplit
 
 MAX_ORIGINS = 20
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+DEV_HTTP_VAR = "PAYBROKER_DEV_HTTP"
 RETURN_PARAMS = frozenset({"payment_id", "status", "timestamp", "signature"})   # appended by the hosted 3-D Secure page
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class OriginError(ValueError):
     pass
+
+
+def dev_http() -> bool:
+    """True only when PAYBROKER_DEV_HTTP is set to 1/true/yes/on: local development only, reported at start-up and in /readyz."""
+    return os.environ.get(DEV_HTTP_VAR, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dev_local(host: str) -> bool:
+    """A host the development opt-in accepts over http: the IPv6 loopback, or `<labels>.localhost` (never a name that merely contains it)."""
+    return host == "::1" or (host.endswith(".localhost") and len(host) > len(".localhost"))
 
 
 def clean_origin(raw) -> str:
@@ -37,9 +51,10 @@ def clean_origin(raw) -> str:
     if parts.username is not None or parts.password is not None or parts.path or parts.query or parts.fragment or value.endswith("/") \
             or "?" in value or "#" in value:
         raise OriginError(f"{value}: an origin has no path, query, fragment or credentials (scheme, host and optional port only)")
-    if scheme == "http" and host not in LOCAL_HOSTS:
+    dev_local = dev_http() and _dev_local(host)
+    if scheme == "http" and host not in LOCAL_HOSTS and not dev_local:
         raise OriginError(f"{value}: only https is allowed (http only for localhost and 127.0.0.1)")
-    if host not in LOCAL_HOSTS:
+    if host not in LOCAL_HOSTS and not (host == "::1" and dev_local):
         try:
             ipaddress.ip_address(host)
         except ValueError:
@@ -51,7 +66,8 @@ def clean_origin(raw) -> str:
     if port is not None and not 1 <= port <= 65535:
         raise OriginError(f"{value}: invalid port")
     default = 443 if scheme == "https" else 80
-    return f"{scheme}://{host}" + (f":{port}" if port is not None and port != default else "")
+    shown = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{shown}" + (f":{port}" if port is not None and port != default else "")
 
 
 def clean_origins(raw) -> list[str]:
