@@ -2,6 +2,7 @@
 (`vault.encrypt(...)`) bound to this app's single vault."""
 from apgkit.vault import VaultError, VaultLocked, is_legacy_token  # noqa: F401
 
+from . import rowmac
 from .core import vault as _v
 
 is_initialized = _v.is_initialized
@@ -46,19 +47,29 @@ _v.register_store(f"app_setting.{FINGERPRINT_KEY_SETTING}",
                   context=FINGERPRINT_KEY_CONTEXT)
 
 
+_SIGNED = {"llm_account.api_key_enc": ("llm_account",), "merchant.webhook_secret_enc": ("merchant",)}   # stores whose row has a MAC
+
+
 def upgrade_legacy(conn) -> int:
     """Rewrite every value written before contexts existed (Fernet tokens, which carry no context) as a v2 token bound to its
     row. Needs the vault unlocked; values that are already v2 are left alone, so it is safe to run after every unlock. Commits
     nothing: the caller owns the transaction. Returns how many values were upgraded."""
     done = 0
-    for st in _v.stores().values():
+    for name, st in _v.stores().items():
         for row in conn.execute(st["select"]).fetchall():
             row = dict(row)
             token = row["value"]
             if not token or not is_legacy_token(token):
                 continue
+            signed = _SIGNED.get(name)
+            if signed:      # the ciphertext is part of the row's MAC: a row that verified before is signed again, any other stays as it was
+                table = signed[0]
+                full = conn.execute(f"SELECT * FROM {table} WHERE id=%s", (row["id"],)).fetchone()      # noqa: S608  (constants of this module)
+                resign = bool(full) and rowmac.enforced() and rowmac._good(table, full)
             row["value"] = _v.reencrypt_legacy(token, st["context"].format(**{k: v for k, v in row.items() if k != "value"}))
             conn.execute(st["update"], row)
+            if signed and resign:
+                rowmac.seal(conn, table, "id=%s", (row["id"],))
             done += 1
     return done
 

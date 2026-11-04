@@ -50,7 +50,7 @@ def deliver(conn, event_id: str) -> tuple[str, str]:
                       "FROM webhook_event e JOIN merchant m ON m.id=e.merchant_id WHERE e.event_id=%s", (event_id,)).fetchone()
     if not ev or ev["status"] == "delivered":
         return "skipped", "gone or already delivered"
-    mer = conn.execute("SELECT id, status, webhook_url, allowed_origins, settings, mac FROM merchant WHERE id=%s", (ev["merchant_id"],)).fetchone()
+    mer = conn.execute("SELECT id, status, webhook_url, webhook_secret_enc, allowed_origins, settings, mac FROM merchant WHERE id=%s", (ev["merchant_id"],)).fetchone()
     if not rowmac.verify_row("merchant", mer):        # a planted or edited merchant row (a redirected webhook URL) is never delivered to
         conn.rollback()
         return "locked", "the merchant row has no valid row MAC (see `paybroker adopt-rowmacs`): delivery waits"

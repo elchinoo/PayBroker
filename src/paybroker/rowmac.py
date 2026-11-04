@@ -1,5 +1,5 @@
-"""Row MACs: a database WRITE without the vault data key cannot plant a merchant or an API key, redirect a webhook, add a connector, or
-change a fraud rule or a blocklist entry.
+"""Row MACs: a database WRITE without the vault data key cannot plant a merchant or an API key, redirect a webhook, add a connector,
+point an LLM account at another URL, change a fraud rule, a blocklist entry or a behaviour setting.
 
 Every row of the tables in FIELDS carries `mac`, an HMAC under a subkey of the vault data key (agentpg-kit `Vault.row_mac`) over the
 columns that decide authority. Reads that feed an authorization or routing decision call `verify_row` / `valid`: a row with a missing or
@@ -10,7 +10,8 @@ vault, a standalone install without a password) nothing is checked and a write c
 once the vault is in use.
 
 Limits (README, "Row MACs"): an older authentic row copied back from a backup verifies; deleting a row is not detected; columns outside
-FIELDS (names, timestamps, usage counters, the simulated connectors' behaviour) can be edited freely. `audit_ledger` hash-chains by itself
+FIELDS (names, timestamps, usage counters, the simulated connectors' behaviour, the breaker state) can be edited freely, and so can the
+`app_setting` rows outside AUTHORITY_KEYS (the kit's own rows, the card fingerprint key ciphertext, counters). `audit_ledger` hash-chains by itself
 and is left alone. The kit signs `web_session` and `api_token` itself.
 """
 import hmac
@@ -27,17 +28,29 @@ log = logging.getLogger("paybroker.rowmac")
 
 # column kinds: s text/number, arr text[] (sorted), json jsonb (sort_keys), ts timestamptz (epoch seconds), bool (0/1)
 FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
-    # webhook_secret_enc is not signed: it is already an authenticated ciphertext bound to the merchant id (vault v2), so it cannot be forged
-    # or moved to another row; a copied-back older value is the replay limit described in the README.
-    "merchant": (("id", "s"), ("status", "s"), ("webhook_url", "s"), ("allowed_origins", "arr"), ("settings", "json")),
+    # webhook_secret_enc and api_key_enc are authenticated ciphertexts bound to their row (vault v2), and are signed as well: a replaced or
+    # cleared value (a swap to an older ciphertext of the same row, or removal) is then an edit of a signed row.
+    "merchant": (("id", "s"), ("status", "s"), ("webhook_url", "s"), ("webhook_secret_enc", "s"), ("allowed_origins", "arr"), ("settings", "json")),
     "merchant_key": (("id", "s"), ("merchant_id", "s"), ("kind", "s"), ("key_hash", "s"), ("revoked_at", "ts")),
     "psp_connector": (("name", "s"), ("enabled", "bool"), ("currencies", "arr"), ("regions", "arr"), ("fee_bps", "s"), ("fixed_fee_cents", "s")),
     "fraud_rule": (("id", "s"), ("name", "s"), ("definition", "json"), ("action", "s"), ("enabled", "bool")),
     "blacklist": (("id", "s"), ("kind", "s"), ("value", "s")),
+    "llm_account": (("id", "s"), ("provider", "s"), ("base_url", "s"), ("api_key_enc", "s"), ("chat_model", "s")),
+    "app_setting": (("key", "s"), ("value", "s")),
 }
 PK: dict[str, tuple[str, ...]] = {
     "merchant": ("id",), "merchant_key": ("id",), "psp_connector": ("name",), "fraud_rule": ("id",), "blacklist": ("id",),
+    "llm_account": ("id",), "app_setting": ("key",),
 }
+# `app_setting` is shared with the kit (vault wraps, admin password hash, ...): only these keys are signed, the rest are never touched.
+# Authority keys: they choose the LLM account that receives case data, the LLM call limits, and what the training-data capture keeps.
+# Not listed, on purpose: card_fingerprint_key_enc (an authenticated ciphertext), last_rule_synthesis, triage_429_streak and
+# triage_paused_until (counters and breaker state; a forged value can only make LLM triage fall back to the deterministic heuristic).
+AUTHORITY_KEYS = frozenset({
+    "triage_account", "triage_rpm", "triage_daily_cap", "triage_group_minutes", "triage_pause_minutes",
+    "training_capture", "training_retention_days", "training_max_rows",
+})
+_SCOPE: dict[str, str] = {"app_setting": "key IN (" + ", ".join("'" + k + "'" for k in sorted(AUTHORITY_KEYS)) + ")"}   # constants only
 TABLES = tuple(FIELDS)
 
 tampered = Counter("payment_broker_tampered_rows_total", "Rows refused because their MAC is missing or wrong", ["table"],
@@ -131,7 +144,8 @@ def seal(conn, table: str, where: str, params: tuple = ()) -> int:
     """Sign the rows of `table` matching `where`, in the caller's transaction. ONLY for rows this process has just written (or `adopt`):
     it signs whatever the row holds now. With the vault locked the MAC is cleared (the row is ignored once the vault is in use, until
     adopted)."""
-    rows = conn.execute(f"SELECT * FROM {table} WHERE {where}", params).fetchall()           # noqa: S608  (table is a constant of this module)
+    scope = f" AND {_SCOPE[table]}" if table in _SCOPE else ""
+    rows = conn.execute(f"SELECT * FROM {table} WHERE ({where}){scope}", params).fetchall()           # noqa: S608  (table and scope are constants)
     unlocked = enforced()
     for r in rows:
         w, p = _where(table, tuple(r[c] for c in PK[table]))
@@ -163,7 +177,8 @@ def snapshot(conn) -> dict[str, list]:
                         if r["mac"] and hmac.compare_digest(r["mac"], loc.token_mac(
                             r["id"], r["name"], r["token_hash"], r["prefix"], r["scope"], r["revoked_at"] is not None))]
     for t in TABLES:
-        out[t] = [tuple(r[c] for c in PK[t]) for r in conn.execute(f"SELECT * FROM {t}").fetchall() if _good(t, r)]        # noqa: S608
+        scope = f" WHERE {_SCOPE[t]}" if t in _SCOPE else ""
+        out[t] = [tuple(r[c] for c in PK[t]) for r in conn.execute(f"SELECT * FROM {t}{scope}").fetchall() if _good(t, r)]        # noqa: S608
     return out
 
 
@@ -212,9 +227,26 @@ def adopt(conn) -> dict[str, int]:
     return counts
 
 
+# The merchant MAC of migration 009 did not cover webhook_secret_enc. A merchant row whose MAC verifies in that older form is authentic
+# (as far as it ever was), so `adopt` signs it again in the current form instead of leaving every merchant ignored after the upgrade.
+_LEGACY_FIELDS = {"merchant": tuple(f for f in FIELDS["merchant"] if f[0] != "webhook_secret_enc")}
+
+
+def _legacy_good(table: str, row: dict) -> bool:
+    try:
+        return core.vault.check_row_mac(table, row.get("mac"), *(_canon(row[c], k) for c, k in _LEGACY_FIELDS[table]))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def adopt_tables(conn) -> dict[str, int]:
     """Sign this module's unsigned rows in the caller's transaction (no commit). Used by `adopt` and when the vault is first created."""
-    return {t: seal(conn, t, "mac IS NULL") for t in TABLES}
+    out = {t: seal(conn, t, "mac IS NULL") for t in TABLES}
+    if enforced():
+        for r in conn.execute("SELECT * FROM merchant WHERE mac IS NOT NULL").fetchall():
+            if not _good("merchant", r) and _legacy_good("merchant", r):
+                out["merchant"] += seal(conn, "merchant", "id=%s", (r["id"],))
+    return out
 
 
 def clear(conn) -> None:

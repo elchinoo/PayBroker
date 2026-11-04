@@ -66,8 +66,7 @@ def settings(conn, *, fresh: bool = False) -> dict:
     one of them says on. Cached for 30 s per process (so the payment path does not query for it), refreshed on every change."""
     if not fresh and _cache["value"] is not None and time.monotonic() - _cache["at"] < SETTINGS_TTL:
         return _cache["value"]
-    rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM app_setting WHERE key = ANY(%s)",
-                                                       ([KEY_CAPTURE, KEY_RETENTION, KEY_MAX_ROWS],))}
+    rows = store.rows(conn, KEY_CAPTURE, KEY_RETENTION, KEY_MAX_ROWS)
     capture = _truthy(rows[KEY_CAPTURE]) if KEY_CAPTURE in rows else _truthy(os.environ.get("PAYBROKER_CAPTURE_TRAINING_DATA"))
     out = {
         "capture": capture,

@@ -167,7 +167,7 @@ def _stored(rows: dict, field: str) -> int:
 
 
 def _rows(conn, *keys: str) -> dict:
-    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM app_setting WHERE key = ANY(%s)", (list(keys),))}
+    return store.rows(conn, *keys)
 
 
 def limits(conn) -> Limits:

@@ -108,10 +108,11 @@ def create(conn, name: str, settings: dict | None = None, allowed_origins: list[
 
 def get(conn, merchant_id: str) -> dict:
     row = conn.execute("SELECT id, name, status, webhook_url, (webhook_secret_enc IS NOT NULL) AS has_webhook_secret, "
-                       "settings, allowed_origins, created_at, mac FROM merchant WHERE id=%s", (merchant_id,)).fetchone()
+                       "settings, allowed_origins, created_at, mac, webhook_secret_enc FROM merchant WHERE id=%s", (merchant_id,)).fetchone()
     if not row or not rowmac.verify_row("merchant", row):         # no valid MAC: as good as absent
         raise NotFound("merchant not found")
     row = rowmac.strip(row)
+    row.pop("webhook_secret_enc")             # selected only so the MAC can be checked
     row["settings"] = DEFAULTS | row["settings"]
     return row
 
@@ -119,10 +120,10 @@ def get(conn, merchant_id: str) -> dict:
 def listing(conn, name: str | None = None) -> list[dict]:
     """All merchants, newest first; `name` keeps those whose name is exactly that (names are unique for new merchants)."""
     rows = conn.execute(
-        "SELECT m.id, m.name, m.status, m.webhook_url, m.allowed_origins, m.settings, m.created_at, m.mac, "
+        "SELECT m.id, m.name, m.status, m.webhook_url, m.webhook_secret_enc, m.allowed_origins, m.settings, m.created_at, m.mac, "
         "(SELECT count(*) FROM transaction t WHERE t.merchant_id=m.id) AS payments "
         "FROM merchant m WHERE (%s::text IS NULL OR m.name = %s) ORDER BY m.created_at DESC", (name, name)).fetchall()
-    return [{k: v for k, v in r.items() if k not in ("settings", "mac")} for r in rowmac.valid("merchant", rows)]
+    return [{k: v for k, v in r.items() if k not in ("settings", "mac", "webhook_secret_enc")} for r in rowmac.valid("merchant", rows)]
 
 
 def update(conn, merchant_id: str, *, name: str | None, status: str | None, settings: dict | None,

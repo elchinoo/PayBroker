@@ -2,8 +2,8 @@
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from . import rowmac, vault
 from . import settings_store as store
-from . import vault
 from .config import get_settings
 from .netguard import check_url
 
@@ -72,18 +72,25 @@ def env_account() -> dict | None:
     return out
 
 
-_PUBLIC = "id, name, provider, base_url, (api_key_enc IS NOT NULL) AS has_key, api_key_last4, chat_model, created_at, updated_at"
+_COLUMNS = "id, name, provider, base_url, api_key_enc, api_key_last4, chat_model, created_at, updated_at, mac"
+
+
+def _public(row: dict) -> dict:
+    """The row as the operator sees it: no ciphertext, no MAC; `verified` says whether the broker would use it."""
+    out = {k: v for k, v in row.items() if k not in ("api_key_enc", "mac")}
+    return out | {"has_key": row["api_key_enc"] is not None, "verified": rowmac.verify_row("llm_account", row)}
 
 
 def list_accounts(conn) -> list[dict]:
-    return conn.execute(f"SELECT {_PUBLIC} FROM llm_account ORDER BY name").fetchall()
+    return [_public(r) for r in conn.execute(f"SELECT {_COLUMNS} FROM llm_account ORDER BY name").fetchall()]
 
 
 def get_account(conn, account_id: int) -> dict:
-    row = conn.execute(f"SELECT {_PUBLIC} FROM llm_account WHERE id=%s", (account_id,)).fetchone()
+    """Any stored account, forged or not (the operator can see and delete it); `verified` says whether it may be used."""
+    row = conn.execute(f"SELECT {_COLUMNS} FROM llm_account WHERE id=%s", (account_id,)).fetchone()
     if not row:
         raise AccountError("account not found")
-    return row
+    return _public(row)
 
 
 def _clean(value: str | None) -> str | None:
@@ -117,6 +124,7 @@ def create(conn, *, name: str, provider: str, base_url: str, api_key: str | None
                                                              _clean(chat_model))).fetchone()
     if key:      # the ciphertext is bound to the account id, which exists only now (same transaction)
         conn.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (vault.encrypt(key, vault.llm_key_context(row["id"])), row["id"]))
+    rowmac.seal(conn, "llm_account", "id=%s", (row["id"],))
     conn.commit()
     return row["id"]
 
@@ -138,7 +146,7 @@ def update(conn, account_id: int, *, name: str, provider: str, base_url: str, ap
         args += [vault.encrypt(api_key.strip(), vault.llm_key_context(account_id)), api_key.strip()[-4:]]
     elif clear_key:
         sets += ["api_key_enc=NULL", "api_key_last4=NULL"]
-    conn.execute(f"UPDATE llm_account SET {', '.join(sets)} WHERE id=%s", (*args, account_id))
+    rowmac.update(conn, "llm_account", ", ".join(sets), tuple(args), "id=%s", (account_id,))     # re-signed only if it verified before
     conn.commit()
 
 
@@ -162,7 +170,7 @@ def chat_config_for(conn, ref: int | str) -> ChatConfig:
         return ChatConfig(base_url=s.llm_base_url, model=s.llm_chat_model, label="Environment", trusted=True, key_plain=s.llm_api_key)
     account_id = int(ref)
     row = conn.execute("SELECT * FROM llm_account WHERE id=%s", (account_id,)).fetchone()
-    if not row:
+    if not row or not rowmac.verify_row("llm_account", row):         # no valid MAC: as good as absent
         raise AccountError("account not found")
     if not row["chat_model"]:
         raise AccountError("this account has no chat model configured")
@@ -180,7 +188,7 @@ def triage_account(conn) -> int | str | None:
         return ENV if chosen == ENV else int(chosen)
     if env_usable:
         return ENV
-    usable = [a for a in list_accounts(conn) if a["chat_model"]]
+    usable = [a for a in list_accounts(conn) if a["chat_model"] and a["verified"]]
     return usable[0]["id"] if len(usable) == 1 else None
 
 

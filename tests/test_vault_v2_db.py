@@ -8,7 +8,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from paybroker import audit, cards, core, settings_store, vault, webhooks, worker
+from paybroker import audit, cards, core, rowmac, settings_store, vault, webhooks, worker
 from paybroker.db import connect
 from tests.conftest import needs_db
 from tests.test_db import CSRF, op, pay, shop, tokenize  # noqa: F401  (fixtures)
@@ -82,6 +82,8 @@ def test_values_written_before_contexts_still_work_and_are_upgraded_after_unlock
         fp = vault.decrypt(settings_store.get(conn, "card_fingerprint_key_enc"), vault.FINGERPRINT_KEY_CONTEXT)
         conn.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (_legacy("old-account-key-0123456789"), aid))
         conn.execute("UPDATE merchant SET webhook_secret_enc=%s WHERE id=%s", (_legacy("whsec_old"), mid))
+        rowmac.seal(conn, "llm_account", "id=%s", (aid,))              # the raw writes above stand for rows an older version signed
+        rowmac.seal(conn, "merchant", "id=%s", (mid,))
         settings_store.put(conn, "card_fingerprint_key_enc", _legacy(fp))
         conn.commit()
         t = _tokens(conn)
@@ -98,6 +100,9 @@ def test_values_written_before_contexts_still_work_and_are_upgraded_after_unlock
         assert vault.decrypt(t["account"]["v"], vault.llm_key_context(aid)) == "old-account-key-0123456789"
         assert vault.decrypt(t["merchant"]["v"], vault.webhook_secret_context(mid)) == "whsec_old"
         assert vault.upgrade_legacy(conn) == 0                           # idempotent
+        # the ciphertexts are part of the rows' MACs: the upgrade signed the rows again (they verified before it)
+        assert rowmac._good("llm_account", conn.execute("SELECT * FROM llm_account WHERE id=%s", (aid,)).fetchone())
+        assert rowmac._good("merchant", conn.execute("SELECT * FROM merchant WHERE id=%s", (mid,)).fetchone())
 
 
 def test_signing_in_upgrades_old_values(client, shop, op, monkeypatch):
@@ -106,11 +111,13 @@ def test_signing_in_upgrades_old_values(client, shop, op, monkeypatch):
     _webhook(client, op, mid, monkeypatch)
     with connect() as conn:
         conn.execute("UPDATE merchant SET webhook_secret_enc=%s WHERE id=%s", (_legacy("whsec_old"), mid))
+        rowmac.seal(conn, "merchant", "id=%s", (mid,))
         conn.commit()
     vault.lock()
     assert client.post("/api/login", json={"password": "correct horse battery staple"}, headers=CSRF).status_code == 200
     with connect() as conn:
         assert _tokens(conn)["merchant"]["v"].startswith("v2$")
+        assert rowmac._good("merchant", conn.execute("SELECT * FROM merchant WHERE id=%s", (mid,)).fetchone())
 
 
 def test_rotating_the_data_key_reencrypts_everything_and_leaves_the_ledger_intact(client, shop, op, monkeypatch):
@@ -123,6 +130,7 @@ def test_rotating_the_data_key_reencrypts_everything_and_leaves_the_ledger_intac
         before = _tokens(conn)
         fp = vault.decrypt(before["fp"], vault.FINGERPRINT_KEY_CONTEXT)
         conn.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (_legacy("old-account-key-0123456789"), aid))   # a legacy value too
+        rowmac.seal(conn, "llm_account", "id=%s", (aid,))
         conn.commit()
         entries = audit.verify(conn)["entries"]
     assert client.post("/api/vault/rotate-key", json={"password": PW}, headers=op).status_code == 422              # no confirm flag
@@ -137,6 +145,8 @@ def test_rotating_the_data_key_reencrypts_everything_and_leaves_the_ledger_intac
         assert vault.decrypt(after["account"]["v"], vault.llm_key_context(aid)) == "old-account-key-0123456789"
         assert vault.decrypt(after["merchant"]["v"], vault.webhook_secret_context(mid)) == secret
         assert vault.decrypt(after["fp"], vault.FINGERPRINT_KEY_CONTEXT) == fp                  # fingerprints stay valid
+        assert rowmac._good("llm_account", conn.execute("SELECT * FROM llm_account").fetchone())     # re-encrypted rows were signed again
+        assert rowmac._good("merchant", conn.execute("SELECT * FROM merchant").fetchone())
         verdict = audit.verify(conn)
         assert verdict["intact"] and verdict["entries"] == entries + 1                          # one entry added, none touched
         last = audit.recent(conn, 1)[0]

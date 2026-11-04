@@ -511,7 +511,11 @@ configured nothing changes. Details: agentpg-kit `docs/GUIDE.md`, section 7.3.3.
 Rows that grant access or carry trust are signed with an HMAC under a subkey of the vault data key, so a database **write** without
 that key (stolen database credentials) cannot plant them: `merchant` (id, status, webhook URL, allowed origins, settings),
 `merchant_key` (id, merchant, kind, key hash, revoked_at), `psp_connector` (name, enabled, currencies, regions, fees), `fraud_rule`
-(id, name, definition, action, enabled) and `blacklist` (id, kind, value). The kit signs `web_session` and `api_token` the same way.
+(id, name, definition, action, enabled), `blacklist` (id, kind, value), `llm_account` (id, provider, base URL, encrypted key, chat
+model) and the behaviour keys of `app_setting`: `triage_account` (which account receives case data), `triage_rpm`, `triage_daily_cap`,
+`triage_group_minutes`, `triage_pause_minutes`, `training_capture`, `training_retention_days` and `training_max_rows`. `merchant` also
+covers its encrypted webhook secret. The kit signs `web_session` and `api_token` the same way. A setting without a valid MAC reads as
+not set (the default applies), an LLM account without one is never called.
 A row with a missing or wrong MAC is treated as absent: a planted merchant key does not authenticate, a planted or edited merchant
 is not found and gets no webhook, a planted connector is never routed to, a planted rule or blocklist entry does nothing. It is
 logged once per row (table and key only, never values), counted (`payment_broker_tampered_rows_total`) and recorded in the audit
@@ -521,13 +525,16 @@ signs the rows again under the new key.
 It is enforced only while the vault is unlocked (always, with sealed boot). With the vault locked (development, tests, a standalone
 install before its first password) nothing is checked and behaviour is unchanged. Setting the first admin password signs the rows
 that exist at that moment. For a database from before row MACs, run `paybroker adopt-rowmacs` once after migrating, on a database you
-believe untampered: it asks for the admin password and signs every unsigned row, trusting the database as it is now. Until then
-those rows are ignored once the vault is open. After sealed boot's first unseal, or after `reset-admin`, run it as well.
+believe untampered: it asks for the admin password and signs every unsigned row, trusting the database as it is now (a merchant
+signed by the previous version, before its webhook secret was covered, is signed again only if that older MAC still verifies). Until
+then those rows are ignored once the vault is open. After sealed boot's first unseal, or after `reset-admin`, run it as well.
 
 Honest limits: an older authentic row copied back from a backup verifies (replay); deleting a row is not detected (a deleted
 blocklist entry or rule simply stops acting); columns outside the signed set can be edited freely (merchant and rule names and
-descriptions, timestamps, usage counters, connector labels and the simulated connectors' behaviour); `merchant.webhook_secret_enc`
-is not in the MAC because it is already an authenticated ciphertext bound to its merchant; a key's `last_used_at` is not signed. The
+descriptions, timestamps, usage counters, connector labels and the simulated connectors' behaviour); still unsigned: an LLM
+account's name and key last-four, a key's `last_used_at`, and the `app_setting` rows outside the list above (the kit's own vault
+wraps and admin password hash, which the kit protects itself, the card fingerprint key ciphertext, `last_rule_synthesis`, and the
+LLM breaker state `triage_429_streak` and `triage_paused_until`, whose forgery can only push triage to the deterministic heuristic). The
 `audit_ledger` hash-chains by itself and is left alone. Someone who can run code inside the app, or who holds the data key, can sign.
 
 ## Limits worth knowing

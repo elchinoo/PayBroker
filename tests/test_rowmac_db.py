@@ -4,13 +4,35 @@ connector, a rule or a blocklist entry. Enforced while the vault is unlocked, un
 import pytest
 from apgkit.ids import sha256
 
-from paybroker import auth, cli, core, merchants, routing, rowmac, rules, vault
+from paybroker import (
+    accounts,
+    auth,
+    cli,
+    core,
+    merchants,
+    routing,
+    rowmac,
+    rules,
+    settings_store,
+    training_data,
+    triage_limits,
+    vault,
+)
 from paybroker.db import connect
 from tests.conftest import needs_db
 from tests.test_db import op, pay, shop, tokenize  # noqa: F401  (fixtures and helpers)
 
 pytestmark = needs_db
 PW = "test-vault-password-0123"           # the password wrap made by the autouse fixture
+PUBLIC = [(2, 1, 6, "", ("93.184.216.34", 443))]
+
+
+def _account(client, op, monkeypatch, name="gw", url="https://llm.example/v1") -> int:
+    monkeypatch.setattr("paybroker.netguard.socket.getaddrinfo", lambda *a, **k: PUBLIC)
+    r = client.post("/api/accounts", json={"name": name, "provider": "custom", "base_url": url, "api_key": "sk-account-key-0123456789",
+                                           "chat_model": "m"}, headers=op)
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
 
 
 def _forge_key(mid: str, raw: str = "sk_test_forged-by-a-database-write-0123456789") -> str:
@@ -28,14 +50,17 @@ def _tokenized(client, shop):
 
 
 # ---- rows the app writes verify -----------------------------------------------------------------------------------------
-def test_rows_written_by_the_app_carry_a_valid_mac(client, shop, op):
+def test_rows_written_by_the_app_carry_a_valid_mac(client, shop, op, monkeypatch):
     mid, _, _ = shop
     client.post("/api/rules", json={"name": "big", "description": "", "action": "challenge",
                                     "definition": {"all": [{"field": "amount", "op": ">=", "value": 90000}]}}, headers=op)
     client.post("/api/blacklist", json={"kind": "ip", "value": "198.51.100.99"}, headers=op)
+    _account(client, op, monkeypatch)
+    assert client.put("/api/admin/triage/settings", json={"rpm": 7}, headers=op).status_code == 200
+    assert client.put("/api/admin/training/settings", json={"capture": True}, headers=op).status_code == 200
     with connect() as c:
         for t in rowmac.TABLES:
-            rows = c.execute(f"SELECT * FROM {t}").fetchall()
+            rows = c.execute(f"SELECT * FROM {t}" + (f" WHERE {rowmac._SCOPE[t]}" if t in rowmac._SCOPE else "")).fetchall()
             assert rows, t
             assert all(rowmac._good(t, r) for r in rows), t          # seeded connectors and rules too
         assert merchants.get(c, mid)["id"] == mid
@@ -55,7 +80,8 @@ def test_every_edit_by_the_app_re_signs(client, shop, op):
     assert client.patch("/api/connectors/stripe", json={"enabled": False}, headers=op).status_code == 200
     with connect() as c:
         for t in rowmac.TABLES:
-            assert all(rowmac._good(t, r) for r in c.execute(f"SELECT * FROM {t}").fetchall()), t
+            scope = f" WHERE {rowmac._SCOPE[t]}" if t in rowmac._SCOPE else ""
+            assert all(rowmac._good(t, r) for r in c.execute(f"SELECT * FROM {t}{scope}").fetchall()), t
     listed = client.get(f"/api/merchants/{mid}", headers=op).json()["keys"]
     assert all(k["verified"] for k in listed) and "mac" not in listed[0]
 
@@ -271,3 +297,169 @@ def test_a_sealed_first_start_does_not_sign_existing_rows(client, shop):
         assert row["mac"] is None and rowmac.verify_row("blacklist", row) is False
         rowmac.adopt(c)
         assert rowmac.verify_row("blacklist", c.execute("SELECT * FROM blacklist WHERE value='203.0.113.50'").fetchone())
+
+
+# ---- LLM accounts, behaviour settings and the webhook secret -----------------------------------------------------------------
+def test_a_redirected_llm_account_is_not_used_while_unlocked_and_is_used_while_locked(client, op, monkeypatch):
+    aid = _account(client, op, monkeypatch)
+    with connect() as c:
+        assert accounts.chat_config_for(c, aid).base_url == "https://llm.example/v1"
+        c.execute("UPDATE llm_account SET base_url='https://attacker.example/v1' WHERE id=%s", (aid,))
+        c.commit()
+        with pytest.raises(accounts.AccountError):
+            accounts.chat_config_for(c, aid)                          # treated as missing
+        assert accounts.triage_account(c) is None
+        assert accounts.list_accounts(c)[0]["verified"] is False and "mac" not in accounts.list_accounts(c)[0]
+        c.rollback()
+    assert 'payment_broker_tampered_rows_total{table="llm_account"}' in client.get("/metrics", headers=op).text
+    assert client.get("/api/accounts", headers=op).json()["items"][0]["verified"] is False
+    vault.lock()                                                      # locked: nothing enforced, unchanged behaviour
+    with connect() as c:
+        assert accounts.chat_config_for(c, aid).base_url == "https://attacker.example/v1"
+        c.rollback()
+
+
+@pytest.mark.parametrize("column,value", [("provider", "openai"), ("chat_model", "other-model"), ("api_key_enc", None)])
+def test_any_edited_signed_account_column_is_ignored(client, op, monkeypatch, column, value):
+    aid = _account(client, op, monkeypatch)
+    with connect() as c:
+        c.execute(f"UPDATE llm_account SET {column}=%s WHERE id=%s", (value, aid))        # noqa: S608
+        c.commit()
+        with pytest.raises(accounts.AccountError):
+            accounts.chat_config_for(c, aid)
+        c.rollback()
+
+
+def test_a_planted_llm_account_is_ignored_and_a_swapped_one_too(client, op, monkeypatch):
+    a, b = _account(client, op, monkeypatch, "one"), _account(client, op, monkeypatch, "two", "https://other.example/v1")
+    with connect() as c:
+        c.execute("INSERT INTO llm_account (name, provider, base_url, chat_model) VALUES ('planted','custom','https://attacker.example/v1','m')")
+        planted = c.execute("SELECT id FROM llm_account WHERE name='planted'").fetchone()["id"]
+        c.execute("UPDATE llm_account SET mac = (SELECT mac FROM llm_account WHERE id=%s) WHERE id=%s", (a, b))      # a MAC copied from another row
+        c.commit()
+        with pytest.raises(accounts.AccountError):
+            accounts.chat_config_for(c, planted)
+        with pytest.raises(accounts.AccountError):
+            accounts.chat_config_for(c, b)
+        assert accounts.chat_config_for(c, a).label == "one"
+        c.rollback()
+
+
+def test_editing_an_unverified_account_does_not_legitimise_it(client, op, monkeypatch):
+    aid = _account(client, op, monkeypatch)
+    with connect() as c:
+        c.execute("UPDATE llm_account SET base_url='https://attacker.example/v1' WHERE id=%s", (aid,))
+        c.commit()
+    r = client.put(f"/api/accounts/{aid}", json={"name": "gw", "provider": "custom", "base_url": "https://llm2.example/v1", "chat_model": "m"}, headers=op)
+    assert r.status_code == 200
+    with connect() as c:
+        assert rowmac._good("llm_account", c.execute("SELECT * FROM llm_account WHERE id=%s", (aid,)).fetchone()) is False
+        c.rollback()
+
+
+def test_a_cleared_or_replaced_webhook_secret_makes_the_merchant_unverified(client, shop, op, monkeypatch):
+    mid, sk, _ = shop
+    monkeypatch.setattr("paybroker.netguard.socket.getaddrinfo", lambda *a, **k: PUBLIC)
+    assert client.put(f"/api/merchants/{mid}/webhook", json={"url": "https://merchant.example/hook"}, headers=op).status_code == 200
+    with connect() as c:
+        assert rowmac._good("merchant", c.execute("SELECT * FROM merchant").fetchone())
+        c.execute("UPDATE merchant SET webhook_secret_enc = NULL WHERE id=%s", (mid,))
+        c.commit()
+        assert rowmac._good("merchant", c.execute("SELECT * FROM merchant").fetchone()) is False
+        c.rollback()
+
+
+def test_a_forged_edited_or_swapped_setting_is_ignored_while_unlocked_and_accepted_while_locked(client, op):
+    assert client.put("/api/admin/triage/settings", json={"rpm": 33, "daily_cap": 44}, headers=op).status_code == 200
+    with connect() as c:
+        assert triage_limits.limits(c).rpm == 33
+        c.execute("UPDATE app_setting SET value='0' WHERE key='triage_rpm'")                  # edited
+        c.execute("UPDATE app_setting SET mac = (SELECT mac FROM app_setting WHERE key='triage_daily_cap') WHERE key='triage_group_minutes'")
+        c.execute("INSERT INTO app_setting (key, value) VALUES ('triage_pause_minutes', '1440')")                      # planted
+        c.execute("INSERT INTO app_setting (key, value) VALUES ('training_capture', '1')")
+        c.commit()
+        lim = triage_limits.limits(c)
+        assert (lim.rpm, lim.pause_minutes) == (20, 10)                                       # the defaults, as if never set
+        assert lim.daily_cap == 44                                                            # the untouched one still counts
+        assert training_data.settings(c, fresh=True)["capture"] is False
+        assert settings_store.get(c, "triage_rpm") is None
+        c.rollback()
+    assert 'payment_broker_tampered_rows_total{table="app_setting"}' in client.get("/metrics", headers=op).text
+    vault.lock()
+    with connect() as c:
+        assert triage_limits.limits(c).rpm == 0 and triage_limits.limits(c).pause_minutes == 1440
+        assert training_data.settings(c, fresh=True)["capture"] is True
+        c.rollback()
+
+
+def test_a_forged_triage_account_choice_is_ignored(client, op, monkeypatch):
+    a = _account(client, op, monkeypatch, "one")
+    _account(client, op, monkeypatch, "two")
+    with connect() as c:
+        c.execute("INSERT INTO app_setting (key, value) VALUES ('triage_account', %s)", (str(a),))
+        c.commit()
+        assert accounts.triage_account(c) is None             # two accounts and no signed choice
+        accounts.set_triage_account(c, a)
+        assert accounts.triage_account(c) == a
+        c.rollback()
+
+
+def test_settings_outside_the_authority_set_are_left_alone(client, op):
+    with connect() as c:
+        settings_store.put(c, "last_rule_synthesis", "123")
+        c.commit()
+        assert c.execute("SELECT mac FROM app_setting WHERE key='last_rule_synthesis'").fetchone()["mac"] is None
+        assert settings_store.get(c, "last_rule_synthesis") == "123"
+        assert c.execute("SELECT count(*) AS n FROM app_setting WHERE mac IS NOT NULL AND key <> ALL(%s)",
+                         (sorted(rowmac.AUTHORITY_KEYS),)).fetchone()["n"] == 0
+        c.rollback()
+
+
+def test_adopt_signs_unsigned_accounts_and_authority_settings_only(client, op, monkeypatch):
+    aid = _account(client, op, monkeypatch)
+    client.put("/api/admin/triage/settings", json={"rpm": 5}, headers=op)
+    with connect() as c:
+        c.execute("UPDATE llm_account SET mac = NULL")
+        c.execute("UPDATE app_setting SET mac = NULL")
+        c.commit()
+        with pytest.raises(accounts.AccountError):
+            accounts.chat_config_for(c, aid)
+        counts = rowmac.adopt(c)
+        assert counts["llm_account"] == 1 and counts["app_setting"] == 1             # the one authority key; the kit's rows are not signed
+        assert accounts.chat_config_for(c, aid).base_url == "https://llm.example/v1" and triage_limits.limits(c).rpm == 5
+        assert c.execute("SELECT count(*) AS n FROM app_setting WHERE mac IS NOT NULL").fetchone()["n"] == 1
+
+
+def test_adopt_upgrades_merchants_signed_before_the_webhook_secret_was_covered(client, shop, op):
+    mid, sk, _ = shop
+    from paybroker import api
+    with connect() as c:
+        row = c.execute("SELECT * FROM merchant WHERE id=%s", (mid,)).fetchone()
+        old = core.vault.row_mac("merchant", *(rowmac._canon(row[col], k) for col, k in rowmac._LEGACY_FIELDS["merchant"]))
+        c.execute("UPDATE merchant SET mac=%s WHERE id=%s", (old, mid))
+        c.commit()
+        assert rowmac._good("merchant", c.execute("SELECT * FROM merchant").fetchone()) is False
+        c.execute("UPDATE merchant SET status='suspended' WHERE id=%s", (mid,))          # an edited row under the old MAC stays unverified
+        c.commit()
+        rowmac.adopt(c)
+        assert rowmac._good("merchant", c.execute("SELECT * FROM merchant").fetchone()) is False
+        c.execute("UPDATE merchant SET status='active', mac=%s WHERE id=%s", (old, mid))
+        c.commit()
+        rowmac.adopt(c)
+        assert rowmac._good("merchant", c.execute("SELECT * FROM merchant").fetchone())
+    auth.forget_keys()
+    api.forget_merchants()
+    assert client.get("/v1/payments", headers=sk).status_code == 200
+
+
+def test_a_rotation_re_signs_accounts_and_settings(client, op, monkeypatch):
+    aid = _account(client, op, monkeypatch)
+    client.put("/api/admin/triage/settings", json={"rpm": 9}, headers=op)
+    with connect() as c:
+        c.execute("INSERT INTO app_setting (key, value) VALUES ('training_max_rows', '99999')")      # forged: stays unsigned
+        c.commit()
+        rowmac.rotate_data_key(c, password=PW)
+        assert accounts.chat_config_for(c, aid).api_key() == "sk-account-key-0123456789"
+        assert triage_limits.limits(c).rpm == 9
+        assert settings_store.get(c, "training_max_rows") is None
+        c.rollback()
